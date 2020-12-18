@@ -69,6 +69,8 @@
 
 #include "cmds.h"
 
+extern pid_t get_screen_pid(char *screen_name);
+
 enum rwhere {invalid, new_out, new_err, old_out, old_err};
 struct routem {
 	enum rwhere	r_where;
@@ -150,7 +152,7 @@ main(int argc, char *argv[])
 	pid_t	parent;
 	fd_set selset;
 	struct routem *routem;
-
+	int	closed_stdin = 0;
 
 	/*test for real deal or just version and exit*/
 
@@ -212,11 +214,21 @@ main(int argc, char *argv[])
 			}
 		} else if (n == 0) {
 			if (kill(parent, 0)  == -1) {
+				if (env_has_screen_remote_viewer() &&
+					(get_screen_pid(getenv("PBS_JOBID")) != -1)) {
+					/* need to close stdin to detach job */
+					if (!closed_stdin) {
+						(void)close(0);
+						FD_CLR(0, &readset);
+						closed_stdin = 1;
+					}
+				} else {
 #ifdef DEBUG
-				fprintf(stderr, "%s: Parent has gone, and so do I\n",
-					argv[0]);
+					fprintf(stderr, "%s: Parent has gone, and so do I\n",
+						argv[0]);
 #endif	/* DEBUG */
-				break;
+					break;
+				}
 			}
 		}
 

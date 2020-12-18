@@ -2199,6 +2199,7 @@ node_bailout(job *pjob, hnodent *np)
 			case	IM_GET_TASKS:
 			case	IM_SIGNAL_TASK:
 			case	IM_OBIT_TASK:
+			case	IM_OBIT2_TASK:
 			case	IM_GET_INFO:
 			case	IM_GET_RESC:
 			case	IM_CRED:
@@ -2214,6 +2215,11 @@ node_bailout(job *pjob, hnodent *np)
 				(void)tm_reply(ep->ee_fd, ptask->ti_protover,
 					TM_ERROR, ep->ee_client);
 				(void)diswsi(ep->ee_fd, TM_ESYSTEM);
+
+				if (ep->ee_command == IM_OBIT2_TASK) {
+					(void)diswst(ep->ee_fd, "");
+					(void)diswst(ep->ee_fd, "");
+				}
 				(void)dis_flush(ep->ee_fd);
 				break;
 
@@ -2898,6 +2904,64 @@ pre_finish_exec(job *pjob, int do_job_setup_send)
 
 /**
  * @brief
+ *	With job 'pjob' running a remote screen viewer, the pbs_demux output
+ *      will be saved in the job output/error file on the primary mom. This
+ *	returns the file's content, and would clear out the entry of the file.
+ *
+ * @param[in]   pjob - job
+ * @param[in]   which - whether to obtain StdOut or StdErr
+ *
+ * @return   char *
+ * @retval   malloc-ed string of the output, hwich must be freed later
+ * @retval  NULL - either no output, or some error occurred.
+ *
+ */
+char *
+get_screen_demux_output(job *pjob, enum job_file which)
+{
+	int fd;
+	struct stat sbuf;
+	char *send_buf = NULL;
+
+	if (pjob == NULL) {
+		log_err(0, __func__, "NULL pjob");
+		return (NULL);
+	}
+	if (!(pjob->ji_qs.ji_svrflags & JOB_SVFLG_HERE)) {	/* not MS */
+		return (NULL);
+	}
+	if (!has_screen_remote_viewer(pjob, NULL, 0)) {
+		return (NULL);
+	}
+	fd = open_std_file(pjob, which, O_RDWR, pjob->ji_qs.ji_un.ji_momt.ji_exgid);
+		
+
+	if (fd == -1) {	
+		log_err(-1, __func__, "open_std_file failed");
+		return (NULL);
+	}
+	if (fstat(fd, &sbuf) == -1) {
+		log_err(-1, __func__, "fstat failed");
+		close(fd);
+		return (NULL);
+	}
+
+	send_buf = (char *)malloc(sbuf.st_size + 1);
+	if (send_buf == NULL) {
+		log_err(errno, __func__, "malloc failed");
+		close(fd);
+		return (NULL);
+	}
+	read(fd, (char *)send_buf, sbuf.st_size);	
+	send_buf[sbuf.st_size] = '\0';
+	/* truncate the file for the next output to be dumped */
+	(void)ftruncate(fd, 0);
+	(void)close(fd);
+	return (send_buf);
+}
+
+/**
+ * @brief
  *	Input is coming from another MOM over a DIS on tpp stream.
  *	Read the stream to get a Inter-MOM request.
  *
@@ -2938,7 +3002,9 @@ im_request(int stream, int version)
 	int			nodeidx =0;
 	int			resc_idx = 0;
 	int			reply;
-	int			exitval;
+	int			exitval = 0;
+	char			*output_buf = NULL;
+	char			*error_buf = NULL;
 	tm_node_id		pvnodeid;
 	tm_node_id		tvnodeid;
 	tm_task_id		fromtask, event_task = 0, taskid;
@@ -4007,6 +4073,7 @@ join_err:
 			break;
 
 		case	IM_OBIT_TASK:
+		case	IM_OBIT2_TASK:
 			/*
 			 ** Sender is MOM sending a request to monitor a
 			 ** task for exit.
@@ -4017,26 +4084,43 @@ join_err:
 			 ** )
 			 */
 			pvnodeid = disrsi(stream, &ret);
-			BAIL("OBIT_TASK pvnodeid")
+			if (command == IM_OBIT_TASK) {
+				BAIL("OBIT_TASK pvnodeid")
+			} else {
+				BAIL("OBIT2_TASK pvnodeid")
+			}
 			if ((np = find_node(pjob, stream, pvnodeid)) == NULL) {
 				SEND_ERR(PBSE_BADHOST)
 				break;
 			}
 			taskid = disrui(stream, &ret);
-			BAIL("OBIT_TASK taskid")
+			if (command == IM_OBIT_TASK) {
+				BAIL("OBIT_TASK taskid")
+			} else {
+				BAIL("OBIT2_TASK taskid")
+			}
 			ptask = task_find(pjob, taskid);
 			if (ptask == NULL) {
 				SEND_ERR(PBSE_JOBEXIST)
 				break;
 			}
-			DBPRT(("%s: OBIT_TASK %s from node %d task %8.8X\n", __func__,
-				jobid, pvnodeid, taskid))
 			if (ptask->ti_qs.ti_status >= TI_STATE_EXITED) {
 				ret = im_compose(stream, jobid, cookie, IM_ALL_OKAY,
 					event, fromtask, IM_OLD_PROTOCOL_VER);
 				if (ret != DIS_SUCCESS)
 					break;
 				ret = diswsi(stream, ptask->ti_qs.ti_exitstat);
+				if (command == IM_OBIT2_TASK) {
+					char *send_buf = NULL;
+
+					send_buf = get_screen_demux_output(pjob, StdOut);
+					ret = diswst(stream, send_buf ? send_buf:"");
+					free(send_buf);
+
+					send_buf = get_screen_demux_output(pjob, StdErr);
+					ret = diswst(stream, send_buf ? send_buf:"");
+					free(send_buf);
+				}
 			}
 			else {	/* save obit request with task */
 				obitent	*op = (obitent *)malloc(sizeof(obitent));
@@ -4048,6 +4132,7 @@ join_err:
 				op->oe_u.oe_tm.oe_node = pvnodeid;
 				op->oe_u.oe_tm.oe_event = event;
 				op->oe_u.oe_tm.oe_taskid = fromtask;
+				op->oe_u.oe_tm.oe_cmd = command;
 				task_save(ptask);
 				reply = 0;
 			}
@@ -4767,6 +4852,7 @@ join_err:
 					break;
 
 				case	IM_OBIT_TASK:
+				case	IM_OBIT2_TASK:
 					/*
 					 ** Sender is MOM with a death report.
 					 **
@@ -4776,15 +4862,41 @@ join_err:
 					 */
 					exitval = disrsi(stream, &ret);
 					BAIL("OK-OBIT_TASK exitval")
-					DBPRT(("%s: %s OBIT_TASK %8.8X OKAY exit val %d\n",
-						__func__, jobid, event_task, exitval))
+					DBPRT(("%s: %s OBIT_TASK %8.8X OKAY exit val %d\n", __func__, jobid, event_task, exitval))
+
+					if (event_com == IM_OBIT2_TASK) {
+						output_buf = disrst(stream, &ret);
+						BAIL("OK-OBIT2_TASK output_buf")
+
+						DBPRT(("%s: %s OBIT2_TASK %8.8X OKAY output_buf %s\n", __func__, jobid, event_task, output_buf ? output_buf : ""))
+						error_buf = disrst(stream, &ret);
+						BAIL("OK-OBIT2_TASK error_buf")
+						DBPRT(("%s: %s OBIT2_TASK %8.8X OKAY output_buf %s\n", __func__, jobid, event_task, output_buf ? error_buf : ""))
+
+
+						if ((output_buf != NULL) && (error_buf != NULL) && (output_buf[0] == '\0') && (error_buf[0] == '\0')) {
+							free(output_buf);
+							free(error_buf);
+							output_buf = get_screen_demux_output(pjob, StdOut);
+							error_buf = get_screen_demux_output(pjob, StdErr);
+						}
+					}
 					ptask = task_check(pjob, efd, event_task);
-					if (ptask == NULL)
+					if (ptask == NULL) {
+						free(output_buf);
+						free(error_buf);
 						break;
+					}
 					(void)tm_reply(efd, ptask->ti_protover,
 						TM_OKAY, event_client);
 					(void)diswsi(efd, exitval);
+					if (event_com == IM_OBIT2_TASK) {
+						(void)diswst(efd, output_buf ? output_buf: "");
+						(void)diswst(efd, error_buf ? error_buf: "");
+					}
 					(void)dis_flush(efd);
+					free(output_buf);
+					free(error_buf);
 					break;
 
 				case	IM_GET_INFO:
@@ -5553,11 +5665,12 @@ cleanup:
 			if (pobit->oe_type == OBIT_TYPE_TMEVENT &&
 				pobit->oe_u.oe_tm.oe_fd == fd) {
 				DBPRT(("%s: fd %d drop obit event %d "
-					"node %d task %8.8X\n", __func__,
+					"node %d task %8.8X cmd %d\n", __func__,
 					pobit->oe_u.oe_tm.oe_fd,
 					pobit->oe_u.oe_tm.oe_event,
 					pobit->oe_u.oe_tm.oe_node,
-					pobit->oe_u.oe_tm.oe_taskid))
+					pobit->oe_u.oe_tm.oe_taskid,
+					pobit->oe_u.oe_tm.oe_cmd))
 				delete_link(&pobit->oe_next);
 				free(pobit);
 				events++;
@@ -6475,6 +6588,7 @@ aterr:
 			break;
 
 		case TM_OBIT:
+		case TM_OBIT2:
 			/*
 			 ** Register an obit request for the specified task.
 			 **
@@ -6490,10 +6604,16 @@ aterr:
 				goto done;
 
 			if (pjob->ji_nodeid != TO_PHYNODE(tvnodeid)) {	/* not me */
-				ep = event_alloc(pjob, IM_OBIT_TASK, fd, phost,
+				int obit_task;
+
+				if (command == TM_OBIT) {
+					obit_task = IM_OBIT_TASK;
+				} else {
+					obit_task = IM_OBIT2_TASK;
+				}
+				ep = event_alloc(pjob, obit_task, fd, phost,
 					event, fromtask);
-				ret = im_compose(phost->hn_stream, jobid, cookie,
-					IM_OBIT_TASK, ep->ee_event, fromtask,  IM_OLD_PROTOCOL_VER);
+				ret = im_compose(phost->hn_stream, jobid, cookie, obit_task, ep->ee_event, fromtask,  IM_OLD_PROTOCOL_VER);
 				if (ret != DIS_SUCCESS)
 					goto done;
 				ret = diswui(phost->hn_stream, myvnodeid);
@@ -6524,6 +6644,16 @@ aterr:
 				if (ret != DIS_SUCCESS)
 					goto done;
 				ret = diswsi(fd, ptask->ti_qs.ti_exitstat);
+				if (command == TM_OBIT2) {
+					char *send_buf = NULL;
+
+					send_buf = get_screen_demux_output(pjob, StdOut);
+					ret = diswst(fd, send_buf ? send_buf:"");
+					free(send_buf);
+					send_buf = get_screen_demux_output(pjob, StdErr);
+					ret = diswst(fd, send_buf ? send_buf:"");
+					free(send_buf);
+				}
 			}
 			else {
 				obitent	*op = (obitent *)malloc(sizeof(obitent));
@@ -6535,6 +6665,7 @@ aterr:
 				op->oe_u.oe_tm.oe_node = tvnodeid;
 				op->oe_u.oe_tm.oe_event = event;
 				op->oe_u.oe_tm.oe_taskid = fromtask;
+				op->oe_u.oe_tm.oe_cmd = command;
 				reply = 0;
 			}
 			break;

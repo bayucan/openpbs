@@ -288,6 +288,7 @@ extern "C" {
 #define PBSE_HISTDEPEND  15229		/* Finished job did not satisfy dependency */
 #define PBSE_SCHEDCONNECTED	15230
 #define PBSE_NOTARRAY_ATTR  15231		/* Not an array job */
+#define	PBSE_NOSCREEN_JOB	15232	/* not an interactive job running screen */
 
 
 /* the following structure is used to tie error number      */

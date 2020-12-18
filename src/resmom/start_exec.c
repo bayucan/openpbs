@@ -133,6 +133,7 @@ extern int enable_exechost2;
 extern char *msg_err_malloc;
 extern unsigned char pbs_aes_key[][16];
 extern unsigned char pbs_aes_iv[][16];
+extern char		*path_screenrc;
 
 int	ptc = -1;	/* fd for master pty */
 #include <poll.h>
@@ -147,6 +148,7 @@ extern struct rlimit   orig_core_limit;
 extern eventent * event_dup(eventent *ep, job *pjob, hnodent *pnode);
 extern void send_join_job_restart_mcast(int mtfd, int com, eventent *ep, int nth, job *pjob, pbs_list_head *phead);
 
+extern pid_t get_screen_pid(char *screen_name);
 /* Local Varibles */
 
 static int	 script_in;	/* script file, will be stdin	  */
@@ -2761,6 +2763,208 @@ receive_job_update_request(int sd)
 }
 
 /**
+ * @brief
+ * 	Checks if job is an interactive job running screen.
+ *
+ * @param[in]		pjob - target job
+ * @param[in/out]	rem_viewer - filled in with remote viewer path used by
+ *				     the job
+ * @param[in/out]	rem_viewer_sz - size of the 'rem_viewer' array
+ *
+ * @return int
+ * @retval 		1 - true if job is an interactive screen job, and
+ *			    if the screen remote viewer path is a full path,
+ *			    it is checked to make sure its permission allows
+ *			    for execution.
+ * @retval		0 - false
+ *
+ */
+int
+has_screen_remote_viewer(job *pjob, char *rem_viewer, size_t rem_viewer_sz)
+{
+	char *env_entry;	
+	char *remote_viewer;
+
+	if (pjob == NULL)
+		return (0);
+
+	if ((rem_viewer != NULL) && (rem_viewer_sz > 0))
+		rem_viewer[0] = '\0';
+
+	env_entry = arst_string(PBS_CONF_REMOTE_VIEWER,
+			&pjob->ji_wattr[(int)JOB_ATR_variables]);
+
+	if (env_entry != NULL) {
+		remote_viewer = strchr(env_entry, (int)'=');
+		if (remote_viewer != NULL) {
+			if (strncmp(env_entry, PBS_CONF_REMOTE_VIEWER, strlen(env_entry) - strlen(remote_viewer)) != 0)
+				return (0);
+
+			remote_viewer++;
+			if (strcmp(lastname(remote_viewer), "screen") == 0) {
+				if ((remote_viewer[0] == '/') &&
+					(access(remote_viewer, X_OK) == -1))
+					return (0);
+				if ((rem_viewer != NULL) && (rem_viewer_sz > 0))
+					strncpy(rem_viewer, remote_viewer, rem_viewer_sz);
+				return (1);
+			}
+		}
+	}
+
+	return (0);
+}
+
+/**
+ * @brief
+ * 	Returns the corresponding screen pid associated with a job.
+ *
+ * @param[in]	pjob - target job
+ *
+ * @return int
+ * @retval 	<pid> - process id of the screen
+ * @retval	< 0   - if process id not found, or error occurred.
+ *
+ */
+pid_t
+get_job_screen_pid(job *pjob)
+{
+	int	pipes[2];
+	int	parent_read;
+	int	child_write;
+	pid_t	pid;
+	pid_t	screen_pid;
+	int	i,j;
+
+	if (pjob == NULL)
+		return (-1);
+
+
+	if (!has_screen_remote_viewer(pjob, NULL, 0))
+		return (-1);
+
+	if (pipe(pipes) == -1)
+		return (-1);
+
+	if (pipes[0] < 3) {
+        	parent_read = fcntl(pipes[0], F_DUPFD, 3);
+		close(pipes[0]);
+	} else {
+		parent_read = pipes[0];
+	}
+	if (pipes[1] < 3) {
+        	child_write = fcntl(pipes[1], F_DUPFD, 3);
+		close(pipes[1]);
+	} else {
+		child_write = pipes[1];
+	}
+	/*
+	 ** Begin a new process for the fledgling task.
+	 */
+	if ((pid = fork_me(-1)) == -1)
+		return (-1);
+	else if (pid != 0) {		/* parent */
+		int status;
+		(void)close(child_write);
+
+#if defined(HAVE_LIBKAFS) || defined(HAVE_LIBKOPENAFS)
+		waitpid(shellpid, &status, 0);
+#else
+		(void)wait(&status);
+#endif
+		/* read sid */
+		while ( (i = readpipe(parent_read, &screen_pid, sizeof(pid_t))) != -1) {
+			j = errno;
+
+			if (i != sizeof(pid_t)) {
+				sprintf(log_buffer,
+				"[%d@%d] read of pipe for pid job %s got %d not %d", geteuid(), getpid(), pjob->ji_qs.ji_jobid, i, (int)sizeof(pid_t));
+				log_err(j, __func__, log_buffer);
+				(void)close(parent_read);
+				return (-1);
+			}
+			break;
+		}
+		(void)close(parent_read);
+		return (screen_pid);
+	}
+	/* child */
+	close(parent_read);
+	if (becomeuser(pjob) == -1) {
+		log_err(0, __func__, "failed to become user");
+		exit(1);
+	}
+
+	/* child */
+	screen_pid = get_screen_pid(pjob->ji_qs.ji_jobid);
+	(void)writepipe(child_write, &screen_pid, sizeof(screen_pid));
+	(void)close(child_write);
+	exit (0);
+}
+
+/**
+ * @brief
+ *	Create a file containing screen help info.
+ *
+ * @param[in]	pjob - target job
+ *
+ * @return char *
+ * @retval 	<path_name> 	- full pathname containing screen help information
+ * @retval	NULL		- if file could not be created due to error
+ *
+ */
+static char *
+create_screen_help_file(job *pjob)
+{
+	uid_t	exuid;
+	gid_t	exgid;
+	static  char path[MAXPATHLEN + 1];
+	int	fds;
+	FILE	*fp;
+	if (pjob == NULL)
+		return (NULL);
+
+	if (!pjob->ji_grpcache)
+		return (NULL);
+
+        (void) strcpy(path, path_spool);
+        spool_filename(pjob, path, JOB_SCREEN_SUFFIX);
+
+	exuid = pjob->ji_grpcache->gc_uid;
+	exgid = pjob->ji_qs.ji_un.ji_momt.ji_exgid;
+	fds = open_file_as_user(path, O_CREAT | O_WRONLY | O_APPEND, 0755, exuid, exgid);
+	if (fds < 0) {
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_NOTICE,
+                        pjob->ji_qs.ji_jobid,
+                        "Unable to create screen help file");
+		return (NULL);
+	}
+
+	fp = fdopen(fds, "w");
+
+	if (fp == NULL) {
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_NOTICE,
+                        pjob->ji_qs.ji_jobid,
+                        "Unable to associate stream to a file descriptor");
+		close(fds);
+		unlink(path);
+		return (NULL);
+	}
+	fprintf(fp, "Your interactive job is running \'screen\' on %s under host %s\n\n", pjob->ji_qs.ji_jobid, mom_short_name);
+	fprintf(fp, "To disconnect, you can run:\n\n");
+    	fprintf(fp, "\tscreen -d\n\n");
+	fprintf(fp, "You can reconnect to the job at a later time in one of 2 ways:\n\n");
+    	fprintf(fp, "\t1.\tssh %s\n", mom_short_name);
+    	fprintf(fp, "\t\t%s> screen -d -r %s\n\n", mom_short_name, pjob->ji_qs.ji_jobid);
+    	fprintf(fp, "\t2.\tpbs_interact %s\n\n", pjob->ji_qs.ji_jobid);
+	fprintf(fp, "If you want to shut down the screen session, simply run:\n\n");
+	fprintf(fp, "\texit\n\n");
+	fprintf(fp, "Press <return>, <ctrl+D>, <ctrl+J>, <ctrl+M>, or <ctrl+C> to continue...\n");
+	fclose(fp);
+	return (path);
+}
+
+/**
  *
  * @brief
  * 	Used by MOM superior to start the shell process for 'pjob'
@@ -2781,6 +2985,9 @@ finish_exec(job *pjob)
 	int			i, j, k;
 	pbs_socklen_t		len;
 	int			is_interactive = 0;
+	int			is_screen_remote_viewer = 0;
+	char			remote_viewer[MAXPATHLEN];
+	int			qsub_sock = -1;
 	int			numthreads;
 #if SHELL_INVOKE == 1
 	int			pipe_script[] = {-1, -1};
@@ -2902,6 +3109,8 @@ finish_exec(job *pjob)
 	if (is_jattr_set(pjob, JOB_ATR_interactive) && get_jattr_long(pjob, JOB_ATR_interactive) != 0) {
 
 		is_interactive = 1;
+
+		is_screen_remote_viewer = has_screen_remote_viewer(pjob, remote_viewer, sizeof(remote_viewer));
 
 		/*
 		 * open a master pty, need to do it here before we fork,
@@ -3605,8 +3814,8 @@ finish_exec(job *pjob)
 		struct sigaction act;
 		char *termtype;
 		char *phost;
-		int qsub_sock;
 		int old_qsub_sock;
+		pid_t screen_pid;
 		int pts;	/* fd for slave pty */
 
 		/*************************************************************************/
@@ -3640,7 +3849,7 @@ finish_exec(job *pjob)
 		}
 
 		qsub_sock = conn_qsub(phost+1, get_jattr_long(pjob, JOB_ATR_interactive));
-		if (qsub_sock < 0) {
+		if ((qsub_sock < 0) && !is_screen_remote_viewer) {
 			sprintf(log_buffer, "cannot open qsub sock for %s",
 				pjob->ji_qs.ji_jobid);
 			log_err(errno, __func__ , log_buffer);
@@ -3648,7 +3857,8 @@ finish_exec(job *pjob)
 		}
 
 		old_qsub_sock = qsub_sock;
-		FDMOVE(qsub_sock);
+		if (qsub_sock >= 0)
+			FDMOVE(qsub_sock);
 
 		if (get_jattr_str(pjob, JOB_ATR_X11_cookie)) {
 			char display[X_DISPLAY_LEN];
@@ -3679,30 +3889,34 @@ finish_exec(job *pjob)
 			}
 		}
 
-		/* send job id as validation to qsub */
+		if (qsub_sock >= 0) {
+			/* send job id as validation to qsub */
 
-		if (CS_write(qsub_sock, pjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID+1) !=
-			PBS_MAXSVRJOBID+1) {
-			log_err(errno, __func__ , "cannot write jobid");
-			starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+			if (CS_write(qsub_sock, pjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID+1) !=
+				PBS_MAXSVRJOBID+1) {
+				log_err(errno, __func__ , "cannot write jobid");
+				starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+			}
+
+			/* receive terminal type and window size */
+
+			if ((termtype = rcvttype(qsub_sock)) == NULL)
+				starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+			bld_env_variables(&(pjob->ji_env), termtype, NULL);
+
+			if (rcvwinsize(qsub_sock) == -1)
+				starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+
+			/* turn off alarm set around qsub connect activities */
+
+			alarm(0);
+			act.sa_handler = SIG_DFL;
+			act.sa_flags   = 0;
+			(void)sigaction(SIGALRM, &act, NULL);
+		} else {
+			/* needed by remote viewer */
+			bld_env_variables(&(pjob->ji_env), "TERM=vt100", NULL);
 		}
-
-		/* receive terminal type and window size */
-
-		if ((termtype = rcvttype(qsub_sock)) == NULL)
-			starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
-
-		bld_env_variables(&(pjob->ji_env), termtype, NULL);
-
-		if (rcvwinsize(qsub_sock) == -1)
-			starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
-
-		/* turn off alarm set around qsub connect activities */
-
-		alarm(0);
-		act.sa_handler = SIG_DFL;
-		act.sa_flags   = 0;
-		(void)sigaction(SIGALRM, &act, NULL);
 
 		/* set up the Job session */
 
@@ -3756,14 +3970,33 @@ finish_exec(job *pjob)
 				}
 			}
 
-			int res = mom_writer(qsub_sock, ptc);
+				int res = mom_writer(qsub_sock, ptc);
 			/* Inside mom_writer, if read is successful and write fails then it is an error and hence logging here as error for -1 */
-			if (res == -1)
-				log_eventf(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "CS_write failed with errno %d", errno);
-			else if (res == -2)
-				log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "read failed with errno %d", errno);
-
-			shutdown(qsub_sock, 2);
+				if (res == -1)
+					log_eventf(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "CS_write failed with errno %d", errno);
+				else if (res == -2)
+					log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "read failed with errno %d", errno);
+				else
+					log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "read failed with errno %d res = %d", errno, res);
+			if (qsub_sock >= 0) {
+				if (is_screen_remote_viewer) {
+					screen_pid = get_job_screen_pid(pjob);
+					if (screen_pid > 0) {
+						shutdown(qsub_sock, 2);
+						while (kill(screen_pid, 0) != -1) 
+							sleep (1);
+					} else {
+						shutdown(qsub_sock, 2);
+					}
+				} else {
+					shutdown(qsub_sock, 2);
+				}
+			} else if (is_screen_remote_viewer) {
+				while((screen_pid = get_job_screen_pid(pjob)) <= 0)
+					sleep(1);
+				while (kill(screen_pid, 0) != -1) 
+					sleep (1);
+			}
 			exit(0);
 
 		} else if (writerpid > 0) {
@@ -3879,11 +4112,13 @@ finish_exec(job *pjob)
 				(void) close(ptc); /* close master side */
 				ptc = -1;
 				(void) close(pts); /* dup'ed above */
-				(void)close(qsub_sock);
+				if (qsub_sock >= 0)
+					(void)close(qsub_sock);
 
 				/* continue setting up and exec-ing shell */
 
 			} else {
+				char *help_file = NULL;
 				if (shellpid > 0) {
 					/* fork, parent is "reader" process  */
 					(void)sigaction(SIGTERM, &act, NULL);
@@ -3917,10 +4152,20 @@ finish_exec(job *pjob)
 
 					mom_reader_go = 1;
 					/* prepare shell command "cd $PBS_JOBDIR" if in sandbox=PRIVATE mode */
+					if (is_screen_remote_viewer)
+						help_file = create_screen_help_file(pjob);
+					else
+						help_file = NULL;
 					if (sandbox_private) {
-						sprintf(buf, "cd %s\n", pbs_jobdir);
+						if (help_file != NULL) {
+							snprintf(buf, sizeof(buf), "cd %s;cat %s;read\n", pbs_jobdir, help_file);
+						} else {
+							snprintf(buf, sizeof(buf), "cd %s\n", pbs_jobdir);
+						}
 					} else {
 						buf[0] = '\0';
+						if (help_file != NULL)
+							snprintf(buf, sizeof(buf), "cat %s;read\n", help_file);
 					}
 					if ((is_interactive == TRUE) &&
 						get_jattr_str(pjob, JOB_ATR_X11_cookie)) {
@@ -3934,17 +4179,29 @@ finish_exec(job *pjob)
 									JOB_EXEC_FAIL2, &sjr);
 							}
 						}
-						port_forwarder(socks, conn_qsub, phost + 1,
-							get_jattr_long(pjob, JOB_ATR_X11_port),
-							qsub_sock, mom_reader_Xjob,
-							log_mom_portfw_msg);
-					} else {
+						if (qsub_sock >= 0) {
+							port_forwarder(socks, conn_qsub, phost + 1,
+								get_jattr_long(pjob, JOB_ATR_X11_port),
+								qsub_sock, mom_reader_Xjob,
+								log_mom_portfw_msg);
+						}
+					} else if (qsub_sock >= 0) {
 						int res = mom_reader(qsub_sock, ptc, buf);
 						/* Inside mom_reader, if read is successful and write fails then it is an error and hence logging here as error for -1 */
 						if (res == -1)
 							log_eventf(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "Write failed with errno %d", errno);
 						else if (res == -2)
-							log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "CS_read failed with errno %d", errno);
+							log_eventf(PBSEVENT_DEBUG, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "res=%d CS_read failed with errno %d", res, errno);
+						else
+							log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "res=%d CS_read failed with errno %d", res,  errno);
+						if (is_screen_remote_viewer) {
+							pid_t sc_pid;
+							sc_pid = get_job_screen_pid(pjob);
+							if (sc_pid > 0) {
+								while (kill(sc_pid, 0) != -1) 
+									sleep(1);
+							}
+						}
 					}
 				} else {
 					log_err(errno,  __func__,
@@ -3953,7 +4210,9 @@ finish_exec(job *pjob)
 
 				/* make sure qsub gets EOF */
 
-				shutdown(qsub_sock, 2);
+				if (qsub_sock >= 0) {
+					shutdown(qsub_sock, 2);
+				}
 
 				/* change pty back to available after */
 				/* job is done */
@@ -4406,7 +4665,9 @@ if (site_job_setup(pjob) != 0) {
 
 	/* tell mom we are going */
 	starter_return(upfds, downfds, JOB_EXEC_OK, &sjr);
+#if 0
 	log_close(0);
+#endif
 
 	if ((pjob->ji_numnodes == 1) || nodemux || ((cpid = fork()) > 0)) {
 		/* parent does the shell */
@@ -4512,17 +4773,48 @@ if (site_job_setup(pjob) != 0) {
 		the_env = pjob->ji_env.v_envp;
 		*(pjob->ji_env.v_envp + pjob->ji_env.v_used) = NULL;
 
-		execve(the_progname, the_argv, the_env);
+		if (is_interactive && !job_has_executable &&
+			is_screen_remote_viewer) {
+			char **new_argv;
+			new_argv = (char **)calloc(6, sizeof(char *));
+			if (new_argv == NULL) {
+				log_err(errno, __func__, "calloc failed");
+				return;
+			}
+			new_argv[0] = strdup(remote_viewer);
+			new_argv[1] = strdup("-S");
+			new_argv[2] = strdup(pjob->ji_qs.ji_jobid);
+
+	
+			if (access(path_screenrc, R_OK) != -1) {
+				new_argv[3] = "-c";
+				new_argv[4] = path_screenrc;
+				new_argv[5] = NULL;
+			} else {
+				new_argv[3] = NULL;
+			}
+			free_str_array(the_argv);
+			the_argv = new_argv;
+
+			log_eventf(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "execve(%s, %s, ...)", remote_viewer, str_array_to_str(the_argv, ' ')); 
+			execvpe(remote_viewer, the_argv, the_env);
+		} else {
+			execve(the_progname, the_argv, the_env);
+			free_str_array(the_argv);
+		}
 		free(progname);
 		free_attrlist(&argv_list);
-		free_str_array(the_argv);
-		the_argv = NULL;
 		free_str_array(hook_output.env);
 		free_str_array(the_env);
 		the_env = NULL;
 	} else if (cpid == 0) { /* child does demux */
 		char	*arg[2];
 		char	*shellname;
+
+		if (is_screen_remote_viewer) {
+			/* dump demux output into the job spool file */
+			(void)open_std_out_err(pjob);
+		}
 
 		/* setup descriptors 3 and 4 */
 		(void)dup2(pjob->ji_stdout, 3);
@@ -5032,6 +5324,7 @@ start_process(task *ptask, char **argv, char **envp, bool nodemux)
 			/*
 			 ** Open sockets to demux proc for stdout and stderr.
 			 */
+ 
 			if ((fd = open_demux(ipaddr, pjob->ji_stdout)) == -1)
 				starter_return(kid_write, kid_read, JOB_EXEC_FAIL2, &sjr);
 			(void)dup2(fd, 1);
@@ -5048,7 +5341,8 @@ start_process(task *ptask, char **argv, char **envp, bool nodemux)
 			write(2, get_jattr_str(pjob, JOB_ATR_Cookie),
 				strlen(get_jattr_str(pjob, JOB_ATR_Cookie)));
 		}
-	} else if (is_jattr_set(pjob, JOB_ATR_interactive) && get_jattr_long(pjob, JOB_ATR_interactive) > 0) {
+
+	} else if (!has_screen_remote_viewer(pjob, NULL, 0) && is_jattr_set(pjob, JOB_ATR_interactive) && get_jattr_long(pjob, JOB_ATR_interactive) > 0) {
 		/* interactive job, single node, write to pty */
 		if ((pts = open_pty(pjob)) < 0) {
 			log_err(errno, __func__, "cannot open slave");
@@ -5073,7 +5367,9 @@ start_process(task *ptask, char **argv, char **envp, bool nodemux)
 		}
 	}
 
+#if 0
 	log_close(0);
+#endif
 	starter_return(kid_write, kid_read, JOB_EXEC_OK, &sjr);
 
 	environ = the_env;
@@ -6530,7 +6826,7 @@ std_file_name(job *pjob, enum job_file which, int *keeping)
 	char *pd;
 	char *suffix = NULL;
 
-	if (is_jattr_set(pjob, JOB_ATR_interactive) && (get_jattr_long(pjob, JOB_ATR_interactive) > 0)) {
+	if (is_jattr_set(pjob, JOB_ATR_interactive) && (get_jattr_long(pjob, JOB_ATR_interactive) > 0) && !has_screen_remote_viewer(pjob, NULL, 0)) {
 
 		/* interactive job, name of pty is in outpath */
 
@@ -6680,7 +6976,7 @@ open_std_file(job *pjob, enum job_file which, int mode, gid_t exgid)
 	 * protected directory,  otherwise check others for security.
 	 */
 
-	if (is_jattr_set(pjob, JOB_ATR_interactive) != 0 && get_jattr_long(pjob, JOB_ATR_interactive) > 0)
+	if ((is_jattr_set(pjob, JOB_ATR_interactive) != 0 && get_jattr_long(pjob, JOB_ATR_interactive) > 0) && !has_screen_remote_viewer(pjob, NULL, 0))
 		fds = open_file_as_user(path, mode, 0644, exuid, exgid);
 	else if (keeping) {
 		/* The user is keeping the file in his Home directory or sandbox, */
@@ -6807,4 +7103,573 @@ log_mom_portfw_msg(char *msg)
 {
 	strcpy(log_buffer, msg);
 	log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, __func__, log_buffer);
+}
+
+static void
+record_finish_exec2(int sd)
+{
+	conn_t		*conn = NULL;
+	int			i;
+	int			j;
+	job			*pjob = NULL;
+	pbs_task		*ptask;
+	struct startjob_rtn	sjr;
+
+	if ((conn = get_conn(sd)) == NULL) {
+		log_err(PBSE_INTERNAL, __func__, "unable to find pipe");
+		return;
+	}
+
+	ptask = (pbs_task *)conn->cn_data;
+	if (ptask != NULL)
+		pjob  = ptask->ti_job;
+	else {
+		/*
+		 * Job has been deleted before recording session id.
+		 * Read the session information and kill the process.
+		 */
+		memset(&sjr, 0, sizeof(sjr));
+		i = readpipe(sd, &sjr, sizeof(sjr));
+		j = errno;
+		(void)close_conn(sd);
+
+		if (i == sizeof(sjr))
+			kill_session(sjr.sj_session, SIGKILL, 0);
+		else {
+			sprintf(log_buffer,
+				"read of pipe for session information got %d not %d",
+				i, (int)sizeof(sjr));
+			log_err(j, __func__, log_buffer);
+		}
+
+		return;
+	}
+
+	if (pjob == NULL) {
+		log_err(PBSE_INTERNAL, __func__,
+			"no job task associated with connection");
+		return;
+	}
+
+	/* now we read the session id or error */
+	memset(&sjr, 0, sizeof(sjr));
+	i = readpipe(pjob->ji_jsmpipe, &sjr, sizeof(sjr));
+	j = errno;
+
+	if (i != sizeof(sjr)) {
+		sprintf(log_buffer,
+			"read of pipe for pid job %s got %d not %d",
+			pjob->ji_qs.ji_jobid,
+			i, (int)sizeof(sjr));
+		log_err(j, __func__, log_buffer);
+		(void)close_conn(pjob->ji_jsmpipe);
+		pjob->ji_jsmpipe = -1;
+		(void)close(pjob->ji_mjspipe);
+		pjob->ji_mjspipe = -1;
+
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+			pjob->ji_qs.ji_jobid, "start failed, improper sid");
+		return;
+	}
+
+	/* send back as an acknowledgement that MOM got it */
+	(void)writepipe(pjob->ji_mjspipe, &sjr, sizeof(sjr));
+	(void)close_conn(pjob->ji_jsmpipe);
+	pjob->ji_jsmpipe = -1;
+	(void)close(pjob->ji_mjspipe);
+	pjob->ji_mjspipe = -1;
+	ptask->ti_qs.ti_sid = sjr.sj_session;
+	ptask->ti_qs.ti_status = TI_STATE_RUNNING;
+
+	strcpy(ptask->ti_qs.ti_parentjobid, pjob->ji_qs.ji_jobid);
+	if (task_save(ptask) == -1) {
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+			pjob->ji_qs.ji_jobid, "Task save failed");
+	}
+
+	log_eventf(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_INFO, pjob->ji_qs.ji_jobid, "Started reconnect screen task, pid = %d", sjr.sj_session);
+
+	return;
+}
+
+/**
+ * @brief
+ *	Reconnect to a screen job.
+ *
+ * @param[in] pjob - job pointer
+ * @param[in] phost -  the client host name requesting a connection.
+ * @param[in] port -   the client port at 'phost' waiting for requests
+ *
+ * @return      PBS error code
+ * @retval      PBSE_NONE         No error
+ * @retval      PBSE_NOSCREEN_JOB failed to reconnect to a job that is running screen
+ */
+int
+screen_reconnect(job *pjob, char *phost, int port)
+{
+	char			**new_argv;
+	int			mjspipe[] = {-1, -1};	/* MOM to job starter for ack */
+	attribute		*pattr;
+	int			downfds = -1;	/* init to invalid fd */
+	int			upfds = -1;	/* init to invalid fd */
+	pbs_task		*ptask;
+	pid_t			cpid;
+	char			*pts_name;	/* name of slave pty */
+	int			jsmpipe[] = {-1, -1};	/* job starter to MOM for sid */
+	struct startjob_rtn	sjr;
+	int			i;
+	int			qsub_sock = -1;
+	int			old_qsub_sock = -1;
+	char			remote_viewer[MAXPATHLEN];
+	pid_t			screen_pid;
+	struct sigaction	act;
+	char			*termtype;
+	int pts;		/* fd for slave pty */
+	struct var_table	the_env;
+
+	memset(&sjr, 0, sizeof(sjr));
+	if (!has_screen_remote_viewer(pjob, remote_viewer, sizeof(remote_viewer)))
+		return (PBSE_NOSCREEN_JOB); 
+	if (phost == NULL)
+		return (PBSE_INTERNAL);
+
+	ptc = -1; /* No current master pty */
+	/*
+	 * open a master pty, need to do it here before we fork,
+	 * to save the slave name in the master's job structure
+	 */
+
+	if ((ptc = open_master(&pts_name)) < 0) {
+		log_err(errno, __func__ , "cannot open master pty");
+		return (PBSE_INTERNAL);
+	}
+	FDMOVE(ptc)
+
+	/* save pty name in job output/error file name */
+
+	pattr = &pjob->ji_wattr[(int)JOB_ATR_outpath];
+	job_attr_def[(int)JOB_ATR_outpath].at_free(pattr);
+	set_attr_generic(pattr, &job_attr_def[JOB_ATR_outpath], pts_name, NULL, INTERNAL);
+	pattr = &pjob->ji_wattr[(int)JOB_ATR_errpath];
+	job_attr_def[(int)JOB_ATR_errpath].at_free(pattr);
+	set_attr_generic(pattr, &job_attr_def[JOB_ATR_errpath], pts_name, NULL, INTERNAL);
+
+	/* create pipes between MOM and the job starter    */
+	/* fork the job starter which will become the job */
+
+	if ((pipe(mjspipe) == -1) || (pipe(jsmpipe) == -1)) {
+		i = -1;
+
+	} else {
+
+		i = 0;
+
+		/* make sure pipe file descriptors are above 2 */
+		if (jsmpipe[1] < 3) {
+			upfds = fcntl(jsmpipe[1], F_DUPFD, 3);
+			(void)close(jsmpipe[1]);
+			jsmpipe[1] = -1;
+		} else {
+			upfds = jsmpipe[1];
+		}
+		if (mjspipe[0] < 3) {
+			downfds = fcntl(mjspipe[0], F_DUPFD, 3);
+			(void)close(mjspipe[0]);
+			mjspipe[0] = -1;
+		} else {
+			downfds = mjspipe[0];
+		}
+	}
+
+	if ((i == -1) || (upfds < 3) || (downfds < 3)) {
+		if (upfds != -1)
+			(void)close(upfds);
+		if (downfds != -1)
+			(void)close(downfds);
+		if (jsmpipe[0] != -1)
+			(void)close(jsmpipe[0]);
+		if (mjspipe[1] != -1)
+			(void)close(mjspipe[1]);
+		log_err(errno, __func__ , "Failed to create communication pipe");
+		return (PBSE_INTERNAL);
+	}
+	if ((ptask = momtask_create(pjob)) == NULL) {
+		if (upfds != -1)
+			(void)close(upfds);
+		if (downfds != -1)
+			(void)close(downfds);
+		if (jsmpipe[0] != -1)
+			(void)close(jsmpipe[0]);
+		if (mjspipe[1] != -1)
+			(void)close(mjspipe[1]);
+		log_err(errno, __func__ , "Task creation failed");
+		return (PBSE_INTERNAL);
+	}
+
+	/*
+	 * Fork the child process that will become the job.
+	 */
+	cpid = fork_me(-1);
+	if (cpid > 0) {
+		conn_t *conn = NULL;
+
+		/* the parent side, still the main man, uhh that is MOM */
+
+		(void)close(upfds);
+		(void)close(downfds);
+
+#if defined(PBS_SECURITY) && (PBS_SECURITY == KRB5)
+		DIS_tcp_funcs();
+#endif
+
+
+ 		/* add the pipe to the connection table so we can poll it */
+                if ((conn = add_conn(jsmpipe[0], ChildPipe, (pbs_net_t)0,
+                                (unsigned int) 0, NULL, record_finish_exec2)) == NULL) {
+                        log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+                                        pjob->ji_qs.ji_jobid,
+                                        "Unable to reconnect to screen job, communication connection table is full");
+                        (void)close(jsmpipe[0]);
+                        (void)close(mjspipe[1]);
+                        return (PBSE_INTERNAL);
+                }
+                conn->cn_data = ptask;
+		if (pjob->ji_jsmpipe > 0)
+			close(pjob->ji_jsmpipe);
+		if (pjob->ji_mjspipe > 0)
+			close(pjob->ji_mjspipe);
+
+                pjob->ji_jsmpipe = jsmpipe[0];
+                pjob->ji_mjspipe = mjspipe[1];
+
+		if (ptc >= 0) {
+			(void) close(ptc);
+			ptc = -1;
+		}
+
+		return (PBSE_NONE);
+
+	} else if (cpid < 0) {
+		if (upfds != -1)
+			(void)close(upfds);
+		if (downfds != -1)
+			(void)close(downfds);
+		if (jsmpipe[0] != -1)
+			(void)close(jsmpipe[0]);
+		if (mjspipe[1] != -1)
+			(void)close(mjspipe[1]);
+
+		(void)sprintf(log_buffer, "Fork failed in %s: %d",
+			__func__, errno);
+		log_err(-1, __func__, log_buffer);
+		return (PBSE_INTERNAL);
+	}
+	/************************************************/
+	/*						*/
+	/* The child process - will become THE JOB	*/
+	/*						*/
+	/************************************************/
+
+	if (jsmpipe[0] != -1)
+		(void)close(jsmpipe[0]);
+
+	if (mjspipe[1] != -1)
+		(void)close(mjspipe[1]);
+
+	/* unprotect the job from the vagaries of the kernel */
+	daemon_protect(0, PBS_DAEMON_PROTECT_OFF);
+
+	/* set system core limit */
+#if defined(RLIM64_INFINITY)
+	(void)setrlimit64(RLIMIT_CORE, &orig_core_limit);
+#else   /* set rlimit 32 bit */
+	(void)setrlimit(RLIMIT_CORE, &orig_core_limit);
+#endif  /* RLIM64_INFINITY */
+
+	/*
+	 * set up the Environmental Variables to be given to the job
+	 */
+
+	/*************************************************************************/
+	/*		We have an "interactive" job, connect the standard	 */
+	/*		streams to a socket connected to qsub.			 */
+	/*************************************************************************/
+	sigemptyset(&act.sa_mask);
+#ifdef SA_INTERRUPT
+	act.sa_flags   = SA_INTERRUPT;
+#else
+	act.sa_flags   = 0;
+#endif /* SA_INTERRUPT */
+	act.sa_handler = no_hang;
+	(void)sigaction(SIGALRM, &act, NULL);
+	alarm(30);
+
+	CLR_SJR(sjr)	/* clear structure used to return info to parent */
+	qsub_sock = conn_qsub(phost, port);
+	if (qsub_sock < 0)  {
+		sprintf(log_buffer, "cannot open qsub sock for %s",
+			pjob->ji_qs.ji_jobid);
+		log_err(errno, __func__ , log_buffer);
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+	}
+
+	old_qsub_sock = qsub_sock;
+	if (qsub_sock >= 0)
+		FDMOVE(qsub_sock);
+
+	if (qsub_sock != old_qsub_sock) {
+
+		if (CS_remap_ctx(old_qsub_sock, qsub_sock) != CS_SUCCESS) {
+
+			(void)CS_close_socket(old_qsub_sock);
+			starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+		}
+	}
+
+	/* send job id as validation to qsub */
+
+	if (CS_write(qsub_sock, pjob->ji_qs.ji_jobid, PBS_MAXSVRJOBID+1) !=
+				PBS_MAXSVRJOBID+1) {
+		log_err(errno, __func__ , "cannot write jobid");
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+	}
+
+	/*
+	 * set up the Environmental Variables to be given to the job
+	 */
+	the_env.v_used   = 0;
+	the_env.v_ensize = 2;
+	the_env.v_envp = (char **)calloc(2, sizeof(char *));
+	if (the_env.v_envp == NULL) {
+		log_err(ENOMEM, __func__, "out of memory");
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+	}
+
+
+	if ((termtype = rcvttype(qsub_sock)) == NULL) {
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+	} else {
+		char *buf;
+		buf = strchr(termtype, '=');
+		if (buf == NULL) {
+			bld_env_variables(&the_env, "TERM", "vt100");
+		} else {
+			buf++;
+			bld_env_variables(&the_env, "TERM", buf);
+		}
+	}
+
+	if (rcvwinsize(qsub_sock) == -1)
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+
+	/* turn off alarm set around qsub connect activities */
+
+	alarm(0);
+	act.sa_handler = SIG_DFL;
+	act.sa_flags   = 0;
+	(void)sigaction(SIGALRM, &act, NULL);
+
+	/* set up the Job session */
+
+	/* Open the slave pty as the controlling tty */
+
+	if ((pts = open_pty(pjob)) < 0) {
+		log_err(errno, __func__, "cannot open slave");
+		starter_return(upfds, downfds, JOB_EXEC_FAIL1, &sjr);
+	}
+
+	act.sa_handler = SIG_IGN;	/* setup to ignore SIGTERM */
+
+	writerpid = fork();
+	if (writerpid == 0) {
+		int	res;
+		/* child is "writer" process */
+
+		(void)sigaction(SIGTERM, &act, NULL);
+
+		(void)close(upfds);
+		(void)close(downfds);
+		(void)close(pts);
+		res = mom_writer(qsub_sock, ptc);
+		/* Inside mom_writer, if read is successful and write fails then it is an error and hence logging here as error for -1 */
+		if (res == -1)
+			log_eventf(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "CS_write failed with errno %d", errno);
+		else if (res == -2)
+			log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "read failed with errno %d", errno);
+		else
+			log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "read failed with errno %d res = %d", errno, res);
+		screen_pid = get_job_screen_pid(pjob);
+		if (screen_pid > 0) {
+			shutdown(qsub_sock, 2);
+			while (kill(screen_pid, 0) != -1) 
+				sleep (1);
+		} else {
+			shutdown(qsub_sock, 2);
+		}
+		exit(0);
+
+	} else if (writerpid > 0) {
+		/*
+		 ** parent -- forks
+		 ** again.  the child becomes the job while the
+		 ** parent becomes the reader.
+		 */
+
+		(void)close(1);
+		(void)close(2);
+		(void)dup2(pts, 1);
+		(void)dup2(pts, 2);
+		fflush(stdout);
+		fflush(stderr);
+		set_termcc(pts);	/* set terminal control char */
+		(void)setwinsize(pts);	/* set window size to qsub's */
+		shellpid = fork();
+		if (shellpid == 0) {
+
+			/*********************************************/
+			/* child - this will be the interactive job  */
+			/* i/o is to slave tty			     */
+			/*********************************************/
+
+			(void)close(0);
+			(void)dup2(pts, 0);
+			fflush(stdin);
+
+			(void) close(ptc); /* close master side */
+			ptc = -1;
+			(void) close(pts); /* dup'ed above */
+			(void)close(qsub_sock);
+
+			/* continue setting up and exec-ing shell */
+
+		} else {
+			if (shellpid > 0) {
+				int res;
+				pid_t sc_pid;
+				/* fork, parent is "reader" process  */
+				(void)sigaction(SIGTERM, &act, NULL);
+
+				if (pts != -1)
+					(void)close(pts);
+				if (upfds != -1)
+					(void)close(upfds);
+				if (downfds != -1)
+					(void)close(downfds);
+				(void)close(1);
+				(void)close(2);
+
+				sigemptyset(&act.sa_mask);
+				act.sa_flags   = SA_NOCLDSTOP;
+				act.sa_handler = catchinter;
+				(void)sigaction(SIGCHLD, &act, NULL);
+
+				mom_reader_go = 1;
+				res = mom_reader(qsub_sock, ptc, NULL);
+				/* Inside mom_reader, if read is successful and write fails then it is an error and hence logging here as error for -1 */
+				if (res == -1)
+					log_eventf(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "Write failed with errno %d", errno);
+				else if (res == -2)
+					log_eventf(PBSEVENT_DEBUG, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "res=%d CS_read failed with errno %d", res, errno);
+				else
+					log_eventf(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "res=%d CS_read failed with errno %d", res,  errno);
+				sc_pid = get_job_screen_pid(pjob);
+				if (sc_pid > 0) {
+					while (kill(sc_pid, 0) != -1) 
+						sleep(1);
+				}
+			} else {
+				log_err(errno,  __func__, "cant fork reader");
+			}
+
+			/* make sure qsub gets EOF */
+			shutdown(qsub_sock, 2);
+
+			/* change pty back to available after */
+			/* job is done */
+			(void)chmod(pts_name, 0666);
+			(void)chown(pts_name, 0, 0);
+			exit(0);
+		}
+	} else { /* error */
+		log_err(errno, __func__ , "cannot fork nanny");
+
+		/* change pty back to available */
+		(void)chmod(pts_name, 0666);
+		(void)chown(pts_name, 0, 0);
+
+		starter_return(upfds, downfds, JOB_EXEC_RETRY, &sjr);
+	}
+
+
+	/*************************************************************************/
+	/*	Set resource limits				 		 */
+	/*	Both normal batch and interactive job come through here 	 */
+	/*************************************************************************/
+
+	i = 0;
+
+	/* if RLIMIT_NPROC is definded,  the value set when Mom was */
+	/* invoked was saved,  reset that limit for the job	    */
+#ifdef	RLIMIT_NPROC
+#ifdef  RLIM64_INFINITY
+	if ((i = setrlimit64(RLIMIT_NPROC, &orig_nproc_limit)) == -1) {
+		(void)sprintf(log_buffer,
+			"Unable to restore NPROC limits, err=%d", errno);
+	}
+#else /* RLIM64... */
+	if ((i = setrlimit(RLIMIT_NPROC, &orig_nproc_limit)) == -1) {
+		(void)sprintf(log_buffer,
+			"Unable to restore NPROC limits, err=%d", errno);
+	}
+#endif  /* RLIM64... */
+#endif	/* RLIMIT_NPROC */
+	if (i == 0) {
+		/* now set all other kernel enforced limits on the job */
+		if ((i = mom_set_limits(pjob, SET_LIMIT_SET)) != PBSE_NONE) {
+			(void)sprintf(log_buffer, "Unable to set limits, err=%d", i);
+		}
+	}
+	if (i != 0) {
+		/* if we had a setlimit error, fail the job */
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+			pjob->ji_qs.ji_jobid, log_buffer);
+		starter_return(upfds, downfds, JOB_EXEC_FAIL2, &sjr);/* exits */
+	}
+	endpwent();
+
+	/* if job has executable (submitted as qsub -- <progname> <argv>), then */
+	/* <progname> and <argv> take precedence so they must not be passed to */
+	/* set_credential(), which would modify them. */
+	if (set_credential(pjob, NULL, NULL) == -1) {
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+			pjob->ji_qs.ji_jobid, "set_credential failed");
+		starter_return(upfds, downfds,
+			JOB_EXEC_FAIL2, &sjr);		/* exits */
+	}
+
+	/* tell mom we are going */
+	sjr.sj_session = setsid();
+	starter_return(upfds, downfds, JOB_EXEC_OK, &sjr);
+
+	/* close sockets that child uses */
+	(void)close(pjob->ji_stdout);
+	(void)close(pjob->ji_stderr);
+
+	new_argv = (char **)calloc(5, sizeof(char *));
+	if (new_argv == NULL) {
+		log_event(PBSEVENT_ERROR, PBS_EVENTCLASS_JOB, LOG_ERR,
+			pjob->ji_qs.ji_jobid, "calloc failed");
+		exit(254);	/* should never, ever get here */
+	}
+	new_argv[0] = strdup(remote_viewer);
+	new_argv[1] = strdup("-d");
+	new_argv[2] = strdup("-r");
+	new_argv[3] = strdup(pjob->ji_qs.ji_jobid);
+	new_argv[4] = NULL;
+	log_eventf(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "execve(%s, %s, ...)", remote_viewer, str_array_to_str(new_argv, ' ')); 
+	execve(remote_viewer, new_argv, the_env.v_envp);
+	free_str_array(new_argv);
+	fprintf(stderr, "pbs_mom, exec of %s failed with error: %s\n",
+		remote_viewer, strerror(errno));
+	exit(254);	/* should never, ever get here */
 }

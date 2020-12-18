@@ -61,6 +61,7 @@ extern "C" {
 #include "server_limits.h"
 #endif
 #include "work_task.h"
+#include "libpbs.h"
 
 #ifdef PBS_MOM /* For the var_table used in env funcs */
 /* struct var_table = used to hold environment variables for the job */
@@ -686,6 +687,7 @@ typedef struct	obitent {
 			tm_node_id	oe_node;	/* where does notification go */
 			tm_event_t	oe_event;	/* event number */
 			tm_task_id	oe_taskid;	/* which task id */
+			int		oe_cmd;		/* obit command */
 		} oe_tm;
 		struct batch_request	*oe_preq;
 	} oe_u;
@@ -743,8 +745,9 @@ typedef struct	infoent {
 #define IM_EXEC_PROLOGUE	24
 #define IM_CRED 		25
 #define IM_PMIX			26
-#define IM_RECONNECT_TO_MS			27
-#define IM_JOIN_RECOV_JOB		28
+#define IM_RECONNECT_TO_MS	27
+#define IM_JOIN_RECOV_JOB	28
+#define IM_OBIT2_TASK		29
 
 #define IM_ERROR		99
 #define IM_ERROR2		100
@@ -818,6 +821,7 @@ task_find	(job		*pjob,
 #define JOB_TASKDIR_SUFFIX ".TK"	/* job task directory */
 #define JOB_BAD_SUFFIX     ".BD"	/* save bad job file */
 #define JOB_DEL_SUFFIX     ".RM"	/* file pending to be removed */
+#define JOB_SCREEN_SUFFIX  ".SH"	/* job screen help file */
 
 /*
  * Job states are defined by POSIX as:
@@ -1118,6 +1122,9 @@ extern void del_job_related_file(job *pjob, char *fsuffix);
 #ifdef PBS_MOM
 extern void del_job_dirs(job *pjob, char *taskdir);
 extern void del_chkpt_files(job *pjob);
+extern int  has_screen_remote_viewer(job *, char *, size_t);
+extern char *get_screen_demux_output(job *, enum job_file);
+extern int  screen_reconnect(job *, char *, int);
 #endif
 
 extern void get_jobowner(char *, char *);

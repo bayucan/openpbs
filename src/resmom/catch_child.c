@@ -88,6 +88,7 @@
  */
 /* External Functions */
 void			(*free_job_CPUs)(job *) = NULL;
+extern			pbs_task *find_session(pid_t pid);
 
 /* External Globals */
 
@@ -392,6 +393,150 @@ send_obit(job *pjob, int exval)
 	log_event(PBSEVENT_DEBUG2, PBS_EVENTCLASS_JOB, LOG_DEBUG, pjob->ji_qs.ji_jobid, "Obit sent");
 }
 
+void add_pid_to_job(job *pjob, pid_t the_pid, tm_task_id parent_task_id)
+{
+	pbs_task	*ptask;
+	int		i, j;
+	pid_t		sid;
+	uid_t		proc_uid;
+	uid_t		jobowner;
+#ifdef WIN32
+	char		proc_uname[UNLEN + 1] = {'\0'};
+	char		comm[MAX_PATH] = {'\0'};
+#else
+	char		comm[32] = {'\0'};
+#endif
+	pid_t		pid;
+	pid_t		ppid;
+	pid_t		*allpids(void);
+	pid_t		*pids;
+
+
+	if (pjob == NULL)
+		return;
+
+	if ((pids = allpids()) == NULL)
+                return;
+
+        for (i = 0; pids[i] != -1; i++) {
+
+                pid = pids[i];
+		if (pid <= 0)
+			continue;
+
+#ifdef WIN32
+		j = dep_procinfo(pid, &sid, &proc_uid, proc_uname, sizeof(proc_uname), comm, sizeof(comm));
+#else
+		j = dep_procinfo_inner(pid, &sid, &ppid, &proc_uid, comm, sizeof(comm));
+#endif
+		if (j != TM_OKAY) {
+#ifdef linux
+			char	procid[MAXPATHLEN + 1];
+			struct	stat sbuf;
+
+			snprintf(procid, sizeof(procid), "/proc/%d", pid);
+			if (stat(procid, &sbuf) == -1)
+				continue;
+
+			sid = getsid(pid);
+			if (sid == -1)
+				continue;
+
+			proc_uid = sbuf.st_uid;
+#else
+			continue;
+#endif
+		}
+		if (sid <= 1)
+			continue;
+
+		if ((pid != the_pid) && (ppid != the_pid))
+			continue;
+
+		/*
+		 ** Search all the tasks to make sure the session has
+		 ** not already been attached.
+		 */
+		ptask = find_session(sid);
+		if (ptask != NULL) {
+			sprintf(log_buffer, "%s: sid %d already attached",
+				__func__, sid);
+			log_event(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_NOTICE, (pjob == NULL) ? "N/A" : pjob->ji_qs.ji_jobid, log_buffer);
+			continue;
+		}
+
+		/*
+		 ** The process must be owned by
+		 ** the job owner.
+		 */
+#ifdef WIN32
+		if (proc_uname == NULL
+			|| pjob->ji_user->pw_name == NULL
+			|| (strcasecmp(proc_uname, pjob->ji_user->pw_name) != 0)) {
+			sprintf(log_buffer,
+				"%s: uid mismatch proc %s to job %s",
+				__func__, proc_uname, pjob->ji_user->pw_name);
+			log_event(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_NOTICE, (pjob == NULL) ? "N/A" : pjob->ji_qs.ji_jobid, log_buffer);
+			continue;
+		}
+#else
+		jobowner = pjob->ji_qs.ji_un.ji_momt.ji_exuid;
+		if (proc_uid != jobowner) {
+			sprintf(log_buffer,
+				"%s: uid mismatch proc %d to job %d",
+				__func__, proc_uid, jobowner);
+			log_event(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_NOTICE, (pjob == NULL) ? "N/A" : pjob->ji_qs.ji_jobid, log_buffer);
+			continue;
+		}
+#endif
+		/*
+		 **	Create a new task for the session.
+		 */
+		ptask = momtask_create(pjob);
+		if (ptask == NULL) {
+			sprintf(log_buffer, "%s: task create failed", __func__);
+			log_event(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB, LOG_NOTICE, (pjob == NULL) ? "N/A" : pjob->ji_qs.ji_jobid, log_buffer);
+			continue;
+		}
+
+		strcpy(ptask->ti_qs.ti_parentjobid, pjob->ji_qs.ji_jobid);
+		/*
+		 **	The parent self virtual nodes are not known.
+		 */
+		ptask->ti_qs.ti_parenttask = parent_task_id;
+		ptask->ti_qs.ti_parentnode = TM_ERROR_NODE;
+		ptask->ti_qs.ti_myvnode = TM_ERROR_NODE;
+		ptask->ti_qs.ti_sid = sid;
+		ptask->ti_qs.ti_status = TI_STATE_RUNNING;
+		ptask->ti_flags |= TI_FLAGS_ORPHAN;
+		(void)task_save(ptask);
+
+		/*
+		 ** Add to list of polled jobs if it isn't
+		 ** already there.
+		 */
+		if (is_linked(&mom_polljobs,
+			&pjob->ji_jobque) == 0) {
+			append_link(&mom_polljobs,
+				&pjob->ji_jobque, pjob);
+		}
+
+		/*
+		 ** Do any dependent attach operation.
+		 */
+		j = dep_attach(ptask);
+		if (j != TM_OKAY) {
+			continue;
+		}
+
+		sprintf(log_buffer,
+                        "pid %d sid %d cmd %s attached as task %8.8X",
+                        pid, sid, comm, ptask->ti_qs.ti_task);
+                log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_INFO,
+                        pjob->ji_qs.ji_jobid, log_buffer);
+	}
+}
+
 /**
  * @brief
  * 	Look for job tasks that have terminated (see scan_for_terminating),
@@ -479,12 +624,14 @@ scan_for_exiting(void)
 		for (ptask = (pbs_task *)GET_NEXT(pjob->ji_tasks);
 			ptask != NULL;
 			ptask = (pbs_task *)GET_NEXT(ptask->ti_jobtask)) {
+			pid_t	screen_pid;
 			if (ptask->ti_qs.ti_status != TI_STATE_EXITED)
 				continue;
 			/*
 			 ** Check if it is the top shell.
 			 */
-			if (ptask->ti_qs.ti_parenttask == TM_NULL_TASK) {
+			screen_pid = get_job_screen_pid(pjob);
+			if ( (ptask->ti_qs.ti_parenttask == TM_NULL_TASK) && (screen_pid == -1)) {
 				int	*exitstat =
 					&pjob->ji_qs.ji_un.ji_momt.ji_exitstat;
 
@@ -509,7 +656,9 @@ scan_for_exiting(void)
 						(pjob->ji_qs.ji_svrflags & JOB_SVFLG_CHKPT))
 						pjob->ji_nodekill = TM_ERROR_NODE;
 				}
-			}
+			} else if (ptask->ti_qs.ti_parenttask == TM_NULL_TASK)
+				add_pid_to_job(pjob, screen_pid, TM_NULL_TASK);
+
 			/*
 			 ** Go through any TM client obits waiting.
 			 */
@@ -544,8 +693,17 @@ scan_for_exiting(void)
 						(void)tm_reply(pobit->oe_u.oe_tm.oe_fd,
 							tp->ti_protover, IM_ALL_OKAY,
 							pobit->oe_u.oe_tm.oe_event);
-						(void)diswsi(pobit->oe_u.oe_tm.oe_fd,
-							ptask->ti_qs.ti_exitstat);
+						(void)diswsi(pobit->oe_u.oe_tm.oe_fd, ptask->ti_qs.ti_exitstat);
+						if (pobit->oe_u.oe_tm.oe_cmd == TM_OBIT2) {
+							char *send_buf = NULL;
+
+							send_buf = get_screen_demux_output(pjob, StdOut);
+							(void)diswst(pobit->oe_u.oe_tm.oe_fd, send_buf ? send_buf:"");
+							free(send_buf);
+							send_buf = get_screen_demux_output(pjob, StdErr);
+							(void)diswst(pobit->oe_u.oe_tm.oe_fd, send_buf ? send_buf:"");
+							free(send_buf);
+						}
 						(void)dis_flush(pobit->oe_u.oe_tm.oe_fd);
 					}
 				}
@@ -562,6 +720,16 @@ scan_for_exiting(void)
 						pobit->oe_u.oe_tm.oe_taskid, IM_OLD_PROTOCOL_VER);
 					(void)diswsi(pnode->hn_stream,
 						ptask->ti_qs.ti_exitstat);
+					if (pobit->oe_u.oe_tm.oe_cmd == IM_OBIT2_TASK) {
+						char *send_buf = NULL;
+
+						send_buf = get_screen_demux_output(pjob, StdOut);
+						(void)diswst(pnode->hn_stream, send_buf ? send_buf:"");
+						free(send_buf);
+						send_buf = get_screen_demux_output(pjob, StdErr);
+						(void)diswst(pnode->hn_stream, send_buf ? send_buf:"");
+						free(send_buf);
+					}
 					(void)dis_flush(pnode->hn_stream);
 				}
 

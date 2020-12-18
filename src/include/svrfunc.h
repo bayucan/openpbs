@@ -246,6 +246,8 @@ extern void req_commit_now(struct batch_request *, job *);
 extern void req_deletejob(struct batch_request *);
 extern void req_holdjob(struct batch_request *);
 extern void req_messagejob(struct batch_request *);
+extern void req_inter_connect_job(struct batch_request *);
+extern void req_inter_disconnect_job(struct batch_request *);
 extern void req_py_spawn(struct batch_request *);
 extern void req_relnodesjob(struct batch_request *);
 extern void req_modifyjob(struct batch_request *);

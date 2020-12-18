@@ -167,6 +167,8 @@ typedef struct	event_info {
 	tm_node_id		e_node;		/* destination node */
 	int			e_mtype;	/* message type sent */
 	void			*e_info;	/* possible returned info */
+	void			*e_info2;	/* possible returned info */
+	void			*e_info3;	/* possible returned info */
 	struct	event_info	*e_next;	/* link to next event */
 	struct	event_info	*e_prev;	/* link to prev event */
 }	event_info;
@@ -201,7 +203,6 @@ find_event(tm_event_t x)
 static void
 del_event(event_info *ep)
 {
-
 	/* unlink event from hash list */
 	if (ep->e_prev)
 		ep->e_prev->e_next = ep->e_next;
@@ -287,7 +288,7 @@ new_event()
  *
  */
 static void
-add_event(tm_event_t event, tm_node_id node, int type, void *info)
+add_event(tm_event_t event, tm_node_id node, int type, void *info, void *info2, void *info3)
 {
 	event_info		*ep, **head;
 
@@ -299,6 +300,8 @@ add_event(tm_event_t event, tm_node_id node, int type, void *info)
 	ep->e_node = node;
 	ep->e_mtype = type;
 	ep->e_info = info;
+	ep->e_info2 = info2;
+	ep->e_info3 = info3;
 	ep->e_next = *head;
 	ep->e_prev = NULL;
 	if (*head)
@@ -658,7 +661,7 @@ tm_init(void *info, struct tm_roots *roots)
 	if (startcom(TM_INIT, nevent) != DIS_SUCCESS)
 		return TM_ESYSTEM;
 	dis_flush(local_conn);
-	add_event(nevent, TM_ERROR_NODE, TM_INIT, (void *)roots);
+	add_event(nevent, TM_ERROR_NODE, TM_INIT, (void *)roots, NULL, NULL);
 
 	if ((err = tm_poll(TM_NULL_EVENT, &revent, 1, &nerr)) != TM_SUCCESS)
 		return err;
@@ -746,7 +749,7 @@ tm_attach(char *jobid, char *cookie, pid_t pid, tm_task_id *tid, char *host, int
 		return TM_ENOTCONNECTED;
 
 	dis_flush(local_conn);
-	add_event(nevent, TM_ERROR_NODE, TM_ATTACH, (void *)tid);
+	add_event(nevent, TM_ERROR_NODE, TM_ATTACH, (void *)tid, NULL, NULL);
 
 	init_done = 1;		/* fake having called tm_init */
 	err = tm_poll(TM_NULL_EVENT, &revent, 1, &nerr);
@@ -856,7 +859,7 @@ tm_spawn(int argc, char **argv, char **envp,
 	if (diswcs(local_conn, "", 0) != DIS_SUCCESS)
 		return TM_ENOTCONNECTED;
 	dis_flush(local_conn);
-	add_event(*event, where, TM_SPAWN, (void *)tid);
+	add_event(*event, where, TM_SPAWN, (void *)tid, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -893,7 +896,7 @@ tm_kill(tm_task_id tid, int sig, tm_event_t *event)
 	if (diswsi(local_conn, sig) != DIS_SUCCESS)
 		return TM_ENOTCONNECTED;
 	dis_flush(local_conn);
-	add_event(*event, tp->t_node, TM_SIGNAL, NULL);
+	add_event(*event, tp->t_node, TM_SIGNAL, NULL, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -928,7 +931,44 @@ tm_obit(tm_task_id tid, int *obitval, tm_event_t *event)
 	if (diswui(local_conn, tid) != DIS_SUCCESS)
 		return TM_ESYSTEM;
 	dis_flush(local_conn);
-	add_event(*event, tp->t_node, TM_OBIT, (void *)obitval);
+	add_event(*event, tp->t_node, TM_OBIT, (void *)obitval, NULL, NULL);
+	return TM_SUCCESS;
+}
+
+/**
+ * @brief
+ *	- Like tm_obit(), but with stdout and stderr from tm_spawn returned in
+ *	  in 'obit_out' and 'obit_err'.
+ *
+ * @param[in]	tid - task id
+ * @param[out]	obitval - obit value
+ * @param[out]	obit_out - obit stdout output
+ * @param[out]	obit_err - obit stderr output
+ * @param[out]  event - event handle
+ *
+ * @return      int
+ * @retval      TM_SUCCESS      Success
+ * @retval      TM_ER*          error
+ *
+ */
+int
+tm_obit2(tm_task_id tid, int *obitval, char **obit_out, char **obit_err, tm_event_t *event)
+{
+	task_info	*tp;
+
+	if (!init_done)
+		return TM_BADINIT;
+	if ((tp = find_task(tid)) == NULL)
+		return TM_ENOTFOUND;
+	*event = new_event();
+	if (startcom(TM_OBIT2, *event) != DIS_SUCCESS)
+		return TM_ESYSTEM;
+	if (diswsi(local_conn, tp->t_node) != DIS_SUCCESS)
+		return TM_ESYSTEM;
+	if (diswui(local_conn, tid) != DIS_SUCCESS)
+		return TM_ESYSTEM;
+	dis_flush(local_conn);
+	add_event(*event, tp->t_node, TM_OBIT2, (void *)obitval, (void *)obit_out, (void *)obit_err);
 	return TM_SUCCESS;
 }
 
@@ -977,7 +1017,7 @@ tm_taskinfo(tm_node_id node, tm_task_id *tid_list,
 	thold->list = tid_list;
 	thold->size = list_size;
 	thold->ntasks = ntasks;
-	add_event(*event, node, TM_TASKS, (void *)thold);
+	add_event(*event, node, TM_TASKS, (void *)thold, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -1050,7 +1090,7 @@ tm_rescinfo(tm_node_id node, char *resource, int len, tm_event_t *event)
 	rhold->resc = resource;
 	rhold->len = len;
 
-	add_event(*event, node, TM_RESOURCES, (void *)rhold);
+	add_event(*event, node, TM_RESOURCES, (void *)rhold, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -1086,7 +1126,7 @@ tm_publish(char *name, void *info, int len, tm_event_t *event)
 		return TM_ESYSTEM;
 
 	dis_flush(local_conn);
-	add_event(*event, TM_ERROR_NODE, TM_POSTINFO, NULL);
+	add_event(*event, TM_ERROR_NODE, TM_POSTINFO, NULL, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -1141,7 +1181,7 @@ tm_subscribe(tm_task_id tid, char *name, void *info, int len, int *info_len, tm_
 	ihold->len = len;
 	ihold->info_len = info_len;
 
-	add_event(*event, tp->t_node, TM_GETINFO, (void *)ihold);
+	add_event(*event, tp->t_node, TM_GETINFO, (void *)ihold, NULL, NULL);
 	return TM_SUCCESS;
 }
 
@@ -1336,6 +1376,8 @@ tm_poll(tm_event_t poll_event, tm_event_t *result_event, int wait, int *tm_errno
 	int		ret, mtype, nnodes;
 	int		prot, protver;
 	int		*obitvalp;
+	char		**obit_outp;
+	char		**obit_errp;
 	event_info	*ep = NULL;
 	tm_task_id	tid, *tidp;
 	tm_event_t	nevent;
@@ -1536,6 +1578,31 @@ tm_poll(tm_event_t poll_event, tm_event_t *result_event, int wait, int *tm_errno
 			*obitvalp = disrsi(local_conn, &ret);
 			if (ret != DIS_SUCCESS) {
 				DBPRT(("%s: OBIT failed obitval\n", __func__))
+				goto err;
+			}
+			break;
+
+		case TM_OBIT2:
+			obitvalp = (int *)ep->e_info;
+			*obitvalp = disrsi(local_conn, &ret);
+			if (ret != DIS_SUCCESS) {
+				DBPRT(("%s: OBIT failed obitval\n", __func__))
+				goto err;
+			}
+			obit_outp = (char **)ep->e_info2;
+			*obit_outp = disrst(local_conn, &ret);
+			if (ret != DIS_SUCCESS) {
+				DBPRT(("%s: OBIT failed obitval\n", __func__))
+				goto err;
+			}
+			obit_errp = (char **)ep->e_info3;
+			*obit_errp = disrst(local_conn, &ret);
+			if (ret != DIS_SUCCESS) {
+				DBPRT(("%s: OBIT failed obitval\n", __func__))
+				if (*obit_outp != NULL) {
+					free(*obit_outp);
+					*obit_outp = NULL;
+				}
 				goto err;
 			}
 			break;

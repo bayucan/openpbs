@@ -311,6 +311,8 @@ struct batch_reply
 #define PBS_BATCH_ModifyVnode    	99
 #define PBS_BATCH_DeleteJobList  	100
 #define PBS_BATCH_ServerReady    	101
+#define PBS_BATCH_InterConnectJob	102
+#define PBS_BATCH_InterDisconnectJob	103
 
 #define PBS_BATCH_FileOpt_Default	0
 #define PBS_BATCH_FileOpt_OFlg		1
@@ -351,6 +353,8 @@ int PBSD_mgr_put(int, int, int, int, char *, struct attropl *, char *, int, char
 int PBSD_manager(int, int, int, int, char *, struct attropl *, char *);
 int PBSD_msg_put(int, char *, int, char *, char *, int, char **);
 int PBSD_relnodes_put(int, char *, char *, char *, int, char **);
+int PBSD_inter_connect_put(int, char *, char *, char *, char *, int, char **);
+int PBSD_inter_disconnect_put(int, char *, char *, int, char **);
 int PBSD_py_spawn_put(int, char *, char **, char **, int, char **);
 int PBSD_sig_put(int, char *, char *, char *, int, char **);
 int PBSD_term_put(int, int, char *);
@@ -378,6 +382,8 @@ int encode_DIS_MessageJob(int, char *, int, char *);
 int encode_DIS_MoveJob(int, char *, char *);
 int encode_DIS_ModifyResv(int, char *, struct attropl *);
 int encode_DIS_RelnodesJob(int, char *, char *);
+int encode_DIS_InterConnectJob(int, char *, char *, char *);
+int encode_DIS_InterDisconnectJob(int, char *);
 int encode_DIS_PySpawn(int, char *, char **, char **);
 int encode_DIS_QueueJob(int, char *, char *, struct attropl *);
 int encode_DIS_SubmitResv(int, char *, struct attropl *);

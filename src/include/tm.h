@@ -110,6 +110,13 @@ tm_obit(tm_task_id	tid,
 	tm_event_t	*event);
 
 int
+tm_obit2(tm_task_id	tid,
+	int		*obitval,
+	char		**out,
+	char		**err,
+	tm_event_t	*event);
+
+int
 tm_nodeinfo(tm_node_id	**list,
 	int		*nnodes);
 

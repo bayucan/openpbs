@@ -51,7 +51,10 @@
 #include "tm.h"
 #include <signal.h>
 
-int	   *ev;
+int	   *ev;		/* exit value */
+char       **eo; 	/* stdout value */
+char       **ee;	/* stderr value */
+char	   is_screen_remote_viewer = 0;
 tm_event_t *events_spawn;
 tm_event_t *events_obit;
 int	    numnodes;
@@ -104,7 +107,10 @@ wait_for_task(int first, int *nspawned)
 	int	    nobits = 0;
 	int	    rc;
 	int	    tm_errno;
+	int	    is_screen_remote_viewer = 0;
 
+
+	is_screen_remote_viewer = env_has_screen_remote_viewer();
 	nevents = *nspawned;
 	while (*nspawned || nobits) {
 		if (verbose) {
@@ -153,7 +159,11 @@ wait_for_task(int first, int *nspawned)
 				if (no_obit)
 					continue;
 
-				rc = tm_obit(*(tid+c), ev+c, events_obit+c);
+				if (is_screen_remote_viewer) {
+					rc = tm_obit2(*(tid+c), ev+c, &eo[c], &ee[c], events_obit+c);
+				} else {
+					rc = tm_obit(*(tid+c), ev+c, events_obit+c);
+				}
 				if (rc == TM_SUCCESS) {
 					if (*(events_obit+c) == TM_NULL_EVENT) {
 						if (verbose) {
@@ -172,13 +182,27 @@ wait_for_task(int first, int *nspawned)
 
 
 			} else if (eventpolled == *(events_obit + c)) {
-				/* obit event, task exited */
 				nobits--;
+				/* obit event, task exited */
 				*(tid+c) = TM_NULL_TASK;
-				if (verbose || *(ev+c) != 0) {
-					printf("%s: task 0x%08X exit status %d\n",
-						id, c, *(ev+c));
+				if (is_screen_remote_viewer) {
+					if (eo[c] != NULL) {
+						if (*eo[c] != '\0')
+							fprintf(stdout, "%s", eo[c]);
+						free(eo[c]);
+						eo[c] = NULL;
+					}
+
+					if (ee[c] != NULL) {
+						if (*ee[c] != '\0')
+							fprintf(stderr, "%s", ee[c]);
+						free(ee[c]);
+						ee[c] = NULL;
+					}
 				}
+
+				if (verbose || *(ev+c) != 0)
+					printf("%s: task 0x%08X exit status %d\n", id, c, *(ev+c));
 			}
 		}
 	}
@@ -337,13 +361,28 @@ main(int argc, char *argv[], char *envp[])
 		fprintf(stderr, "%s: out of memory\n", id);
 		return 1;
 	}
+
+	eo = (char **)calloc(max_events, sizeof(char *));
+	if (eo == NULL) {
+		fprintf(stderr, "%s: out of memory\n", id);
+		return 1;
+	}
+
+	ee = (char **)calloc(max_events, sizeof(char *));
+	if (ee == NULL) {
+		fprintf(stderr, "%s: out of memory\n", id);
+		return 1;
+	}
+
+	/* Now spawn the program to where it goes */
 	for (c = 0; c < max_events; c++) {
 		*(tid + c)          = TM_NULL_TASK;
 		*(events_spawn + c) = TM_NULL_EVENT;
 		*(events_obit  + c) = TM_NULL_EVENT;
 		*(ev + c)	    = 0;
+		eo[c]	    	    = NULL;
+		ee[c]		    = NULL;
 	}
-
 
 	/* Now spawn the program to where it goes */
 

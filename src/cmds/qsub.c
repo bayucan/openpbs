@@ -164,12 +164,13 @@ extern char *msg_force_qsub_update;
 #define MULTIPLE_MAX_RUN "qsub: multiple max_run_subjobs values found\n"
 
 /* Security library variables */
-static int cs_init = 0; /*1 == security library initialized, 0 == not initialized*/
+int cs_init = 0; /*1 == security library initialized, 0 == not initialized*/
 static int cred_type = -1;
 size_t	cred_len = 0;
 char	*cred_buf = NULL;
 char	cred_name[32]; /* space to hold small credential name */
 char	*tmpdir = NULL; /* Path of temp directory in which to put the job script */
+char	*progname = "qsub";
 
 /* variables for Interactive mode */
 int comm_sock; /* Socket for interactive and block job */
@@ -305,7 +306,10 @@ extern int  daemon_submit(int *, int *);
 extern int  get_script(FILE *, char *, char *);
 extern int  check_for_background(int, char **);
 
-void exit_qsub(int exitstatus);
+extern void exit_qsub(int exitstatus);
+extern void bailout(int ret);
+extern void shut_close_sock(int sock);
+extern char * strdup_esc_commas(char *str_to_dup);
 
 /* The following are "Utility" functions. */
 
@@ -613,86 +617,6 @@ refresh_dfltqsubargs(void)
 	pbs_statfree(ss_save);
 }
 
-/**
- * @brief
- *	exit_qsub - issues the exit system call with the "exit" argument after
- * 	doing and needed library shutdown.
- *
- * @param[in] exitstatus integer value indiacting exit
- *
- * @return None
- *
- */
-void
-exit_qsub(int exitstatus)
-{
-/* A thread that makes qsub exit, should try and acquire the Critical Section. */
-	critical_section();
-
-	if (cs_init == 1)
-		/* Cleanup security library initializations before exiting */
-		CS_close_app();
-
-#ifdef BACKTRACE_SIZE
-	if (exitstatus != 0) {
-		int i, frames;
-		void *bt_buf[BACKTRACE_SIZE];
-		char **bt_strings;
-
-		frames = backtrace(bt_buf, BACKTRACE_SIZE);
-		printf("Backtrace has %d frames.\n", frames);
-		bt_strings = backtrace_symbols(bt_buf, frames);
-		if (bt_strings == NULL) {
-			printf("No backtrace symbols present!\n");
-		} else {
-			for (i=0; i < frames; i++) {
-				printf("%s\n", bt_strings[i]);
-			}
-			free(bt_strings);
-		}
-	}
-#endif
-
-	exit(exitstatus);
-}
-
-/**
- * @brief
- *	strdup_esc_commas - duplicate a string escaping commas
- *	The string is duplicated with all commas in the original string
- *	escaped by preceding escape character.
- *
- * @param[in] str_to_dup - string to be duplicated
- *
- * @return
- * @retval string Succes
- * @retval NULL   Failure
- */
-char *
-strdup_esc_commas(char *str_to_dup)
-{
-	char *roaming = str_to_dup;
-	char *endstr, *returnstr;
-
-	if (str_to_dup == NULL)
-		return NULL;
-
-	returnstr = endstr = malloc(strlen(str_to_dup)*2 + 2);
-	/* even for an all-comma string, this should suffice */
-	if (returnstr == NULL)
-		return NULL; /* just return null on malloc failure */
-	while (*roaming != '\0') {
-		while (*roaming != '\0' && *roaming != ',')
-			*(endstr++) = *(roaming++);
-		if (*roaming == ',') {
-			*(endstr++) = ESC_CHAR;
-			*(endstr++) = ',';
-			roaming++;
-		}
-	}
-	*endstr = '\0';
-	return (returnstr);
-}
 
 /**
  * @brief
@@ -764,50 +688,6 @@ interactive_port(void)
 	}
 
 	return (portstring);
-}
-
-/**
- * @brief
- *	Shut and Close a socket
- *
- * @param	sock	file descriptor
- *
- * @return Void
- *
- */
-static void
-shut_close_sock(int sock)
-{
-	shutdown(sock, 2);
-	closesocket(sock);
-}
-
-/**
- * @brief
- * 	send delete job request, disconnect with server and exit qsub
- *
- * @param[in]	ret	qsub exit code
- *
- * @return      void
- *
- */
-void
-bailout(int ret)
-{
-	int c;
-
-	shut_close_sock(comm_sock);
-	printf("Job %s is being deleted\n", new_jobname);
-	c = cnt2server(server_out);
-	if (c <= 0) {
-		fprintf(stderr,
-			"qsub: cannot connect to server %s (errno=%d)\n",
-			pbs_server, pbs_errno);
-		exit_qsub(1);
-	}
-	(void)pbs_deljob(c, new_jobname, NULL);
-	pbs_disconnect(c);
-	exit_qsub(ret);
 }
 
 /* The following functions support the "Block Job" capability of PBS. */
@@ -1960,6 +1840,17 @@ job_env_basic(void)
 		len += strlen(env);
 		free(env);
 	}
+
+	if (Interact_opt) {
+		pbs_loadconf(0);	
+		if (pbs_conf.pbs_conf_remote_viewer != NULL) {
+			/* ,PBS_REMOTE_VIEWER=<value> */
+			len += strlen(PBS_CONF_REMOTE_VIEWER) + strlen(pbs_conf.pbs_conf_remote_viewer) + 3;
+		} else {
+			/* ,PBS_REMOTE_VIEWER= */
+			len += strlen(PBS_CONF_REMOTE_VIEWER) + 3;
+		}
+	}
 	len += PBS_MAXHOSTNAME;
 	len += MAXPATHLEN;
 	len *= 2; /* Double it for all the commas, etc. */
@@ -2020,6 +1911,20 @@ job_env_basic(void)
 		strcat(job_env, ",PBS_O_TZ=");
 		strcat(job_env, c);
 		free(c);
+	}
+
+	if (Interact_opt) {
+		if (pbs_conf.pbs_conf_remote_viewer != NULL) {
+			strcat(job_env, ",");
+			strcat(job_env, PBS_CONF_REMOTE_VIEWER);
+			strcat(job_env, "=");
+			strcat(job_env, pbs_conf.pbs_conf_remote_viewer);
+		} else {
+			/* unset value */
+			strcat(job_env, ",");
+			strcat(job_env, PBS_CONF_REMOTE_VIEWER);
+			strcat(job_env, "=");
+		}
 	}
 
 	/*

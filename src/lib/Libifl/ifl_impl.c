@@ -406,6 +406,15 @@ pbs_msgjob(int c, char *jobid, int fileopt, char *msg, char *extend) {
 	return (*pfn_pbs_msgjob)(c, jobid, fileopt, msg, extend);
 }
 
+int
+__pbs_inter_connect_job(int c, char *jobid, char *host, char *portstr, char *extend) {
+	return (*pfn_pbs_inter_connect_job)(c, jobid, host, portstr, extend);
+}
+
+int
+__pbs_inter_disconnect_job(int c, char *jobid, char *extend) {
+	return (*pfn_pbs_inter_disconnect_job)(c, jobid, extend);
+}
 /**
  * @brief
  *	-Pass-through call to send order job batch request

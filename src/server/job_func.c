@@ -1199,6 +1199,9 @@ job_purge(job *pjob)
 #ifdef PBS_MOM
 	/* delete job file */
 	del_job_related_file(pjob, JOB_FILE_SUFFIX);
+	remove_stdouterr_files(pjob, JOB_STDOUT_SUFFIX);
+	remove_stdouterr_files(pjob, JOB_STDERR_SUFFIX);
+	remove_stdouterr_files(pjob, JOB_SCREEN_SUFFIX);
 
 #if defined(PBS_SECURITY) && (PBS_SECURITY == KRB5)
 	delete_cred(pjob->ji_qs.ji_jobid);

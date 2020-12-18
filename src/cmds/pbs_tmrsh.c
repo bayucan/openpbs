@@ -194,12 +194,15 @@ main(int argc, char *argv[], char *envp[])
 	int		numnodes;
 	int		err = 0;
 	int		rc, exitval;
+	char		*outbuf = NULL;
+	char		*errbuf = NULL;
 	struct tm_roots	rootrot;
 	char		*nodefile;
 	tm_node_id	*nodelist;
 	tm_event_t	event;
 	tm_task_id	tid;
 	char		line[256], *cp;
+	int		is_screen_remote_viewer = 0;
 
 	/*test for real deal or just version and exit*/
 
@@ -318,7 +321,13 @@ main(int argc, char *argv[], char *envp[])
 		return 255;
 	}
 
-	if ((rc = tm_obit(tid, &exitval, &event)) != TM_SUCCESS) {
+	is_screen_remote_viewer = env_has_screen_remote_viewer();
+	if (is_screen_remote_viewer)
+		rc = tm_obit2(tid, &exitval, &outbuf, &errbuf, &event);
+	else
+		rc = tm_obit(tid, &exitval, &event);
+
+	if (rc != TM_SUCCESS) {
 		fprintf(stderr, "%s: obit: host \"%s\" err %s\n",
 			id, host, get_ecname(rc));
 		return 255;
@@ -328,7 +337,19 @@ main(int argc, char *argv[], char *envp[])
 	if (rc != TM_SUCCESS || event == TM_ERROR_EVENT) {
 		fprintf(stderr, "%s: tm_poll(obit): host \"%s\" err %s %d\n",
 			id, host, get_ecname(rc), err);
+		if (is_screen_remote_viewer) {
+			free(outbuf);
+			free(errbuf);
+		}	
 		return 255;
+	}
+	if (is_screen_remote_viewer) {
+			if ((outbuf != NULL) && (outbuf[0] != '\0'))
+				fprintf(stdout, "%s", outbuf);
+			free(outbuf);
+			if ((errbuf != NULL) && (errbuf[0] != '\0'))
+				fprintf(stderr, "%s", errbuf);
+			free(errbuf);
 	}
 
 	tm_finalize();

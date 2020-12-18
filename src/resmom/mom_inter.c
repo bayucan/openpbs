@@ -441,15 +441,17 @@ int ptc;
 			int wc;
 			char *p = buf;
 
-			while (c) {
-				if ((wc = CS_write(s, p, c)) < 0) {
-					if (errno == EINTR) {
-						continue;
+			if (s >= 0) {
+				while (c) {
+					if ((wc = CS_write(s, p, c)) < 0) {
+						if (errno == EINTR) {
+							continue;
+						}
+						return (-1);
 					}
-					return (-1);
+					c -= wc;
+					p += wc;
 				}
-				c -= wc;
-				p += wc;
 			}
 		} else if (c == 0) {
 			return (0);

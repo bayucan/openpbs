@@ -654,7 +654,7 @@ cput_sum(job *pjob)
 
 	if (active_tasks == 0) {
 		sprintf(log_buffer, "no active tasks");
-		log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB,
+		log_event(PBSEVENT_DEBUG3, PBS_EVENTCLASS_JOB,
 			LOG_INFO, pjob->ji_qs.ji_jobid, log_buffer);
 	}
 	if (nps == 0)
@@ -2989,6 +2989,47 @@ mom_unnice(void)
 
 /**
  * @brief
+ *	Get the info required for process id.
+ *
+ * @param[in] pid - process id
+ * @param[in] sid - session id
+ * @param[in] ppid - parent process id
+ * @param[in] uid - user id
+ * @param[in] comm - command name
+ * @param[in] len - size of command
+ *
+ * @return	int
+ * @retval	TM_OKAY			Success
+ * @retval	TM_ENOPROC(17011)	Error
+ *
+ */
+int
+dep_procinfo_inner(pid_t pid, pid_t *sid, pid_t *ppid, uid_t *uid, char *comm, size_t len)
+{
+	int		i;
+	proc_stat_t	*ps;
+
+	getprocs();
+	for (i=0; i<nproc; i++) {
+		ps = &proc_info[i];
+		if (ps->pid == pid) {
+			*sid = ps->session;
+			*uid = ps->uid;
+
+			if (ppid != NULL)
+				*ppid = ps->ppid;
+
+			memset(comm, '\0', len);
+			memcpy(comm, ps->comm,
+				MIN(len-1, sizeof(ps->comm)));
+			return TM_OKAY;
+		}
+	}
+	return TM_ENOPROC;
+}
+
+/**
+ * @brief
  *	Get the info required for tm_attach.
  *
  * @param[in] pid - process id
@@ -3005,22 +3046,8 @@ mom_unnice(void)
 int
 dep_procinfo(pid_t pid, pid_t *sid, uid_t *uid, char *comm, size_t len)
 {
-	int		i;
-	proc_stat_t	*ps;
 
-	getprocs();
-	for (i=0; i<nproc; i++) {
-		ps = &proc_info[i];
-		if (ps->pid == pid) {
-			*sid = ps->session;
-			*uid = ps->uid;
-			memset(comm, '\0', len);
-			memcpy(comm, ps->comm,
-				MIN(len-1, sizeof(ps->comm)));
-			return TM_OKAY;
-		}
-	}
-	return TM_ENOPROC;
+	return (dep_procinfo_inner(pid, sid, NULL, uid, comm, len));
 }
 
 #ifdef NAS_UNKILL /* localmod 011 */

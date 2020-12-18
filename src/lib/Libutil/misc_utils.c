@@ -2620,3 +2620,47 @@ create_subjob_id(char *parent_jid, int sjidx)
 	*pcb = '[';
 	return jid;
 }
+
+
+/**
+ * @brief
+ * 	Return the pid associated with 'screen_name'.
+ *
+ * @param[in] screen_name - screen input
+ *
+ * @return pid_t
+ * @retval  <pid> - the process id assocated with 'screen_name'.
+ * @retval -1     - no process id found or error
+ */
+pid_t
+get_screen_pid(char *screen_name)
+{
+	FILE	*child;
+	char	buf[MAXBUFLEN];
+	char	screen_list_cmd[MAXBUFLEN];
+	pid_t	screen_pid = -1;
+
+	if (screen_name == NULL)
+		return (-1);
+
+	/* child */
+	snprintf(screen_list_cmd, sizeof(screen_list_cmd), "/usr/bin/screen -list %s", screen_name);
+
+	if ((child = popen(screen_list_cmd, "r")) == NULL) {
+		return (-1);
+	}
+
+	while (fgets(buf, MAXBUFLEN-1, child) != NULL) {
+		char *p;
+		if (strstr(buf, screen_name) != NULL) {
+			p = strtok(buf, ".");
+			if (p != NULL) {
+				screen_pid = atoi(p);
+				break;
+			}
+		}
+	}
+
+	pclose(child);
+	return (screen_pid);
+}

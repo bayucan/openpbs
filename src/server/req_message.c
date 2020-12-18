@@ -337,3 +337,84 @@ req_relnodesjob(struct batch_request *preq)
 		reply_text(preq, PBSE_SYSTEM, msg);
 	}
 }
+
+static void
+post_inter_req(struct work_task *pwt)
+{
+	struct batch_request *preq;
+
+	if (pwt->wt_aux2 != PROT_TPP)
+		svr_disconnect(pwt->wt_event);	/* close connection to MOM */
+	preq = pwt->wt_parm1;
+	preq->rq_conn = preq->rq_orgconn;  /* restore socket to client */
+
+	(void)sprintf(log_buffer, "Interactive connect/disconnect sent returned with status=%d", preq->rq_reply.brp_code);
+	log_event(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_INFO,
+		preq->rq_ind.rq_message.rq_jid, log_buffer);
+	if (preq->rq_reply.brp_code)
+		req_reject(preq->rq_reply.brp_code, 0, preq);
+	else
+		reply_ack(preq);
+}
+
+void
+req_inter_connect_job(struct batch_request *preq)
+{
+	int               jt;            /* job type */
+	job		 *pjob;
+	int		  rc;
+
+	if ((pjob = chk_job_request(preq->rq_ind.rq_inter_connect.rq_jid, preq, &jt, NULL)) == 0)
+		return;
+
+	if (jt != IS_ARRAY_NO) {
+		reply_text(preq, PBSE_NOSUP, "not supported for Array Jobs");
+		return;
+	}
+
+	/* the job must be running */
+
+	if (!check_job_state(pjob, JOB_STATE_LTR_RUNNING)) {
+		req_reject(PBSE_BADSTATE, 0, preq);
+		return;
+	}
+
+	/* pass the request on to MOM */
+
+	rc = relay_to_mom(pjob, preq, post_inter_req);
+	if (rc)
+		req_reject(rc, 0, preq);	/* unable to get to MOM */
+
+	/* After MOM acts and replies to us, we pick up in post_inter_connect_req() */
+}
+
+void
+req_inter_disconnect_job(struct batch_request *preq)
+{
+	int               jt;            /* job type */
+	job		 *pjob;
+	int		  rc;
+
+	if ((pjob = chk_job_request(preq->rq_ind.rq_inter_disconnect.rq_jid, preq, &jt, NULL)) == 0)
+		return;
+
+	if (jt != IS_ARRAY_NO) {
+		reply_text(preq, PBSE_NOSUP, "not supported for Array Jobs");
+		return;
+	}
+
+	/* the job must be running */
+
+	if (!check_job_state(pjob, JOB_STATE_LTR_RUNNING)) {
+		req_reject(PBSE_BADSTATE, 0, preq);
+		return;
+	}
+
+	/* pass the request on to MOM */
+
+	rc = relay_to_mom(pjob, preq, post_inter_req);
+	if (rc)
+		req_reject(rc, 0, preq);	/* unable to get to MOM */
+
+	/* After MOM acts and replies to us, we pick up in post_inter_disconnect_req() */
+}

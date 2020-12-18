@@ -214,6 +214,7 @@ char path_addconfigs_reserved_prefix[] = "PBS";
 char *path_hooks;
 char *path_hooks_workdir;
 char *path_rescdef;
+char *path_screenrc;
 hook *phook;
 char *hook_suffix = HOOK_FILE_SUFFIX;
 int hook_suf_len;
@@ -6895,7 +6896,8 @@ main(int argc, char *argv[])
 	u_long			ipaddr;
 	int			optindinc = 0;
 	mom_hook_input_t	hook_input;
-	char			path_hooks_rescdef[MAXPATHLEN+1];
+	char			path_hooks_rescdef[MAXPATHLEN + 1];
+	char			path_screenrc_file[MAXPATHLEN + 1];
 	int			sock_bind_rm;
 	int			sock_bind_mom;
 #ifdef	WIN32
@@ -8156,6 +8158,9 @@ main(int argc, char *argv[])
 						PBS_RESCDEF, log_buffer);
 	path_rescdef = (char *)path_hooks_rescdef;
 
+	snprintf(path_screenrc_file, MAXPATHLEN, "%s/pbs_screenrc", pbs_conf.pbs_home_path);
+	path_screenrc = path_screenrc_file;
+
 	/* Need to go back to mom's working directory since when recovering */
 	/* hooks, we temporarily chdir-ed to the hooks directory. */
 	if (chdir(mom_home) == -1) {
@@ -8640,6 +8645,7 @@ main(int argc, char *argv[])
 				continue;
 
 			/* update information for my tasks */
+			add_pid_to_job(pjob, get_job_screen_pid(pjob), TM_NULL_TASK);
 			(void)mom_set_use(pjob);
 
 			/* see if need to check point any job */

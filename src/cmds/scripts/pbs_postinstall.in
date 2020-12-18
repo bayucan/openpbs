@@ -468,6 +468,17 @@ create_home() {
 	fi
 	echo "***"
 
+	# Create the pbs_screenrc file if it does not exist
+	screenrc="${PBS_HOME}/pbs_screenrc"
+	if [ ! -f "$screenrc" ]; then
+		touch $screenrc
+		echo "*** Creating new file pbs_screenrc"
+		chmod 644 $screenrc
+	else
+		echo "*** Existing pbs_screenrc file left unmodified: $screenrc"
+	fi
+	echo "***"
+
 	# Configure PBS_HOME for server
 	if [ -x "$PBS_EXEC/sbin/pbs_server" ]; then
 		echo "*** The PBS server has been installed in ${PBS_EXEC}/sbin."

@@ -85,6 +85,10 @@ int __pbs_movejob(int, char *, char *, char *);
 
 int __pbs_msgjob(int, char *, int, char *, char *);
 
+int __pbs_inter_connect_job(int, char *, char *, char *, char *);
+
+int __pbs_inter_disconnect_job(int, char *, char *);
+
 int __pbs_orderjob(int, char *, char *, char *);
 
 int __pbs_rerunjob(int, char *, char *);

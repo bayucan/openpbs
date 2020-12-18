@@ -839,6 +839,38 @@ req_messagejob(struct batch_request *preq)
 	return;
 }
 
+void
+req_inter_connect_job(struct batch_request *preq)
+{
+	int	      ret = 0;
+	job	     *pjob;
+
+	pjob = find_job(preq->rq_ind.rq_inter_connect.rq_jid);
+	ret = screen_reconnect(pjob, preq->rq_ind.rq_inter_connect.rq_host, atoi(preq->rq_ind.rq_inter_connect.rq_portstr));
+	if (ret == PBSE_NONE)
+		reply_ack(preq);
+	else
+		req_reject(ret, 0, preq);
+	return;
+}
+
+
+void
+req_inter_disconnect_job(struct batch_request *preq)
+{
+	int	      ret = 0;
+	job	     *pjob;
+
+	pjob = find_job(preq->rq_ind.rq_inter_disconnect.rq_jid);
+	log_eventf(PBSEVENT_JOB, PBS_EVENTCLASS_JOB, LOG_ERR, pjob->ji_qs.ji_jobid, "rq_inter_disconnect_job");
+
+	if (ret == PBSE_NONE)
+		reply_ack(preq);
+	else
+		req_reject(ret, 0, preq);
+	return;
+}
+
 /**
  * @brief
  *	Spawn a Python process.

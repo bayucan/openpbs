@@ -223,6 +223,8 @@ extern void send_join_job_restart(int, eventent *, int, job *, pbs_list_head *);
 extern int send_resc_used_to_ms(int stream, job *pjob);
 extern int recv_resc_used_from_sister(int stream, job *pjob, int nodeidx);
 extern int  is_comm_up(int);
+extern pid_t get_job_screen_pid(job *pjob);
+extern void add_pid_to_job(job *pjob, pid_t pid, tm_task_id parent_task_id);
 
 /* Defines for pe_io_type, see run_pelog() */
 
@@ -261,8 +263,10 @@ extern int	tm_reply(int stream, int version, int com, tm_event_t event);
 #ifdef WIN32
 extern void	end_proc(void);
 extern int      dep_procinfo(pid_t pid, pid_t *psid, uid_t *puid, char *puname, size_t uname_len, char *comm, size_t comm_len);
+extern int      dep_procinfo_inner(pid_t pid, pid_t *psid, pid_t *ppid, uid_t *puid, char *puname, size_t uname_len, char *comm, size_t comm_len);
 #else
 extern int	dep_procinfo(pid_t, pid_t *, uid_t *, char *, size_t);
+extern int	dep_procinfo_inner(pid_t, pid_t *, pid_t *, uid_t *, char *, size_t);
 #endif
 #ifdef NAS_UNKILL /* localmod 011 */
 extern int	kill_procinfo(pid_t, pid_t *, u_Long *);

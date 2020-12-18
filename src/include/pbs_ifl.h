@@ -635,6 +635,10 @@ DECLDIR int pbs_movejob(int, char *, char *, char *);
 
 DECLDIR int pbs_msgjob(int, char *, int, char *, char *);
 
+DECLDIR int pbs_inter_connect_job(int, char *, char *, char *, char *);
+
+DECLDIR int pbs_inter_disconnect_job(int, char *, char *);
+
 DECLDIR int pbs_relnodesjob(int, char *, char *, char *);
 
 DECLDIR int pbs_orderjob(int, char *, char *, char *);
@@ -737,6 +741,10 @@ extern int pbs_movejob(int, char *, char *, char *);
 
 extern int pbs_msgjob(int, char *, int, char *, char *);
 
+extern int pbs_inter_connect_job(int, char *, char *, char *, char *);
+
+extern int pbs_inter_disconnect_job(int, char *, char *);
+
 extern int pbs_relnodesjob(int, char *,  char *, char *);
 
 extern int pbs_orderjob(int, char *, char *, char *);
@@ -811,6 +819,8 @@ extern char *(*pfn_pbs_locjob)(int, char *, char *);
 extern int (*pfn_pbs_manager)(int, int, int, char *, struct attropl *, char *);
 extern int (*pfn_pbs_movejob)(int, char *, char *, char *);
 extern int (*pfn_pbs_msgjob)(int, char *, int, char *, char *);
+extern int (*pfn_pbs_inter_connect_job)(int, char *, char *, char *, char *);
+extern int (*pfn_pbs_inter_disconnect_job)(int, char *, char *);
 extern int (*pfn_pbs_orderjob)(int, char *, char *, char *);
 extern int (*pfn_pbs_rerunjob)(int, char *, char *);
 extern int (*pfn_pbs_rlsjob)(int, char *, char *, char *);

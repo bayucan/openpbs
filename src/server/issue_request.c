@@ -697,6 +697,9 @@ issue_Drequest(int conn, struct batch_request *request, void (*func)(), struct w
 				prot,
 				&msgid);
 			break;
+		case PBS_BATCH_InterConnectJob:
+			rc = PBSD_inter_connect_put(conn, request->rq_ind.rq_inter_connect.rq_jid, request->rq_ind.rq_inter_connect.rq_host, request->rq_ind.rq_inter_connect.rq_portstr, NULL, prot, &msgid);
+			break;
 
 		default:
 			(void)sprintf(log_buffer, msg_issuebad, request->rq_type);

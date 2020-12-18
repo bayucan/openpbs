@@ -432,6 +432,7 @@ char *msg_depend_runone = "Job deleted, a dependent job ran";
 char *msg_histdepend = "Finished job did not satisfy dependency";
 char *msg_sched_already_connected = "Scheduler already connected";
 char *msg_notarray_attr = "Attribute has to be set on an array job";
+char *msg_noscreen_job = "Not an interactive job running screen";
 
 /*
  * The following table connects error numbers with text
@@ -609,6 +610,7 @@ struct pbs_err_to_txt pbs_err_to_txt[] = {
 	{PBSE_HISTDEPEND, &msg_histdepend},
 	{PBSE_SCHEDCONNECTED, &msg_sched_already_connected},
 	{PBSE_NOTARRAY_ATTR, &msg_notarray_attr},
+	{PBSE_NOSCREEN_JOB, &msg_noscreen_job},
 	{0, NULL} /* MUST be the last entry */
 };
 

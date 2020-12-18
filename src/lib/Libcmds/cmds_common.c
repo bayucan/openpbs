@@ -93,3 +93,32 @@ set_attr_resc_error_exit(struct attrl **attrib, char *attrib_name, char *attrib_
  */
 void
 DIS_tpp_funcs() { }
+
+
+/**
+ * @brief
+ *	Returns 1 if environment has 'screen' as REMOTE_VIEWER.
+ *
+ * @return     int
+ * @retval	1	- true
+ * @retval	0	- false
+ */
+int
+env_has_screen_remote_viewer(void)
+{
+
+	char	    *remote_viewer;
+
+	remote_viewer = getenv(PBS_CONF_REMOTE_VIEWER);
+	if (remote_viewer != NULL) {
+		char	*rem_view;
+		rem_view = strrchr(remote_viewer, '/');
+		if (rem_view != NULL)
+			rem_view++;
+		else
+			rem_view = remote_viewer;
+		if (strcmp(rem_view, "screen") == 0)
+			return (1);
+	}
+	return (0);
+}

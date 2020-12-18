@@ -133,9 +133,7 @@ struct pbs_config pbs_conf = {
 	0,					/* number of scheduler threads */
 	NULL,					/* default scheduler user */
 	{'\0'}					/* current running user */
-#ifdef WIN32
 	,NULL					/* remote viewer launcher executable along with launch options */
-#endif
 };
 
 /**
@@ -654,12 +652,10 @@ __pbs_loadconf(int reload)
 				if (sscanf(conf_value, "%u", &uvalue) == 1)
 					pbs_conf.pbs_sched_threads = uvalue;
 			}
-#ifdef WIN32
 			else if (!strcmp(conf_name, PBS_CONF_REMOTE_VIEWER)) {
 				free(pbs_conf.pbs_conf_remote_viewer);
 				pbs_conf.pbs_conf_remote_viewer = strdup(conf_value);
 			}
-#endif
 			else if (!strcmp(conf_name, PBS_CONF_AUTH)) {
 				char *value = convert_string_to_lowercase(conf_value);
 				if (value == NULL)
@@ -908,12 +904,10 @@ __pbs_loadconf(int reload)
 		pbs_conf.pbs_daemon_service_user = strdup(gvalue);
 	}
 
-#ifdef WIN32
 	if ((gvalue = getenv(PBS_CONF_REMOTE_VIEWER)) != NULL) {
 		free(pbs_conf.pbs_conf_remote_viewer);
 		pbs_conf.pbs_conf_remote_viewer = strdup(gvalue);
 	}
-#endif
 
 	/* iff_path is inferred from pbs_conf.pbs_exec_path - see below */
 

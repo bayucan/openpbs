@@ -144,6 +144,18 @@ struct rq_relnodes {
 	char *rq_node_list;
 };
 
+/* InterConnectJob */
+struct rq_inter_connect {
+	char rq_jid[PBS_MAXSVRJOBID + 1];
+	char *rq_host;
+	char *rq_portstr;
+};
+
+/* InterDisconnectJob */
+struct rq_inter_disconnect {
+	char rq_jid[PBS_MAXSVRJOBID + 1];
+};
+
 /* PySpawn */
 struct rq_py_spawn {
 	char rq_jid[PBS_MAXSVRJOBID + 1];
@@ -315,6 +327,8 @@ struct batch_request {
 		struct rq_modifyvnode rq_modifyvnode;
 		struct rq_message rq_message;
 		struct rq_relnodes rq_relnodes;
+		struct rq_inter_connect rq_inter_connect;
+		struct rq_inter_disconnect rq_inter_disconnect;
 		struct rq_py_spawn rq_py_spawn;
 		struct rq_manage rq_modify;
 		struct rq_move rq_move;
@@ -407,6 +421,8 @@ extern int decode_DIS_Manage(int, struct batch_request *);
 extern int decode_DIS_DelJobList(int, struct batch_request *);
 extern int decode_DIS_MoveJob(int, struct batch_request *);
 extern int decode_DIS_MessageJob(int, struct batch_request *);
+extern int decode_DIS_InterConnectJob(int, struct batch_request *);
+extern int decode_DIS_InterDisconnectJob(int, struct batch_request *);
 extern int decode_DIS_ModifyResv(int, struct batch_request *);
 extern int decode_DIS_PySpawn(int, struct batch_request *);
 extern int decode_DIS_QueueJob(int, struct batch_request *);

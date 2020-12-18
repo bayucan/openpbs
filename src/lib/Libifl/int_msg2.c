@@ -166,3 +166,56 @@ PBSD_relnodes_put(int c, char *jobid, char *node_list, char *extend, int prot, c
 
 	return rc;
 }
+
+int
+PBSD_inter_connect_put(int c, char *jobid, char *host, char *portstr, char *extend, int prot, char **msgid)
+{
+	int rc = 0;
+
+	if (prot == PROT_TCP) {
+		DIS_tcp_funcs();
+	} else {
+		if ((rc = is_compose_cmd(c, IS_CMD, msgid)) != DIS_SUCCESS)
+			return rc;
+	}
+
+	if ((rc = encode_DIS_ReqHdr(c, PBS_BATCH_InterConnectJob, pbs_current_user)) ||
+		(rc = encode_DIS_InterConnectJob(c, jobid, host, portstr)) ||
+		(rc = encode_DIS_ReqExtend(c, extend))) {
+		return (pbs_errno = PBSE_PROTOCOL);
+	}
+
+	if (dis_flush(c)) {
+		pbs_errno = PBSE_PROTOCOL;
+		rc	  = pbs_errno;
+	}
+
+	return rc;
+}
+
+
+int
+PBSD_inter_disconnect_put(int c, char *jobid, char *extend, int prot, char **msgid)
+{
+	int rc = 0;
+
+	if (prot == PROT_TCP) {
+		DIS_tcp_funcs();
+	} else {
+		if ((rc = is_compose_cmd(c, IS_CMD, msgid)) != DIS_SUCCESS)
+			return rc;
+	}
+
+	if ((rc = encode_DIS_ReqHdr(c, PBS_BATCH_InterDisconnectJob, pbs_current_user)) ||
+		(rc = encode_DIS_InterDisconnectJob(c, jobid)) ||
+		(rc = encode_DIS_ReqExtend(c, extend))) {
+		return (pbs_errno = PBSE_PROTOCOL);
+	}
+
+	if (dis_flush(c)) {
+		pbs_errno = PBSE_PROTOCOL;
+		rc	  = pbs_errno;
+	}
+
+	return rc;
+}

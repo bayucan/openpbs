@@ -141,3 +141,27 @@ encode_DIS_RelnodesJob(int sock, char *jobid, char *node_list)
 
 	return 0;
 }
+
+int
+encode_DIS_InterConnectJob(int sock, char *jobid, char *host, char *portstr)
+{
+	int   rc;
+
+	if ((rc = diswst(sock, jobid) != 0) ||
+		(rc = diswst(sock, host) != 0) ||
+		(rc = diswst(sock, portstr) != 0))
+			return rc;
+
+	return 0;
+}
+
+int
+encode_DIS_InterDisconnectJob(int sock, char *jobid)
+{
+	int   rc;
+
+	if ((rc = diswst(sock, jobid)) != 0)
+		return rc;
+
+	return 0;
+}

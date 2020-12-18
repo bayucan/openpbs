@@ -516,6 +516,14 @@ dis_request_read(int sfds, struct batch_request *request)
 			rc = decode_DIS_MessageJob(sfds, request);
 			break;
 
+		case PBS_BATCH_InterConnectJob:
+			rc = decode_DIS_InterConnectJob(sfds, request);
+			break;
+
+		case PBS_BATCH_InterDisconnectJob:
+			rc = decode_DIS_InterDisconnectJob(sfds, request);
+			break;
+
 		case PBS_BATCH_Shutdown:
 		case PBS_BATCH_FailOver:
 			rc = decode_DIS_ShutDown(sfds, request);

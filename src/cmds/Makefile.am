@@ -69,6 +69,7 @@ bin_PROGRAMS = \
 	qstart \
 	qstop \
 	qsub \
+	pbs_interact \
 	qterm
 
 sbin_PROGRAMS = \
@@ -97,6 +98,7 @@ common_libs = \
 	$(top_builddir)/src/lib/Libsec/libsec.a \
 	$(top_builddir)/src/lib/Libutil/libutil.a \
 	-lpthread \
+	@libz_lib@ \
 	@socket_lib@ \
 	@KRB5_LIBS@
 
@@ -117,7 +119,7 @@ pbs_attach_SOURCES = pbs_attach.c pbs_attach_sup.c ${common_sources}
 
 pbs_demux_CPPFLAGS = ${common_cflags}
 pbs_demux_LDADD = ${common_libs}
-pbs_demux_SOURCES = pbs_demux.c
+pbs_demux_SOURCES = pbs_demux.c ${common_sources}
 
 pbs_dataservice_bin_CPPFLAGS = \
 	${common_cflags}
@@ -237,7 +239,11 @@ qsub_CPPFLAGS = ${common_cflags}
 qsub_LDADD = ${common_libs} \
 		-lssl \
 		-lcrypto
-qsub_SOURCES = qsub.c qsub_sup.c ${common_sources}
+qsub_SOURCES = qsub.c qsub_sup.c pbs_interact_sup.c ${common_sources}
+
+pbs_interact_CPPFLAGS = ${common_cflags}
+pbs_interact_LDADD = ${common_libs}
+pbs_interact_SOURCES = pbs_interact.c pbs_interact_sup.c ${common_sources}
 
 qterm_CPPFLAGS = ${common_cflags}
 qterm_LDADD = ${common_libs}

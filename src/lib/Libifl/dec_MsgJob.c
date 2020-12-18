@@ -103,3 +103,35 @@ decode_DIS_MessageJob(int sock, struct batch_request *preq)
 	preq->rq_ind.rq_message.rq_text = disrst(sock, &rc);
 	return rc;
 }
+
+
+int
+decode_DIS_InterConnectJob(int sock, struct batch_request *preq)
+{
+	int rc;
+
+	rc = disrfst(sock, PBS_MAXSVRJOBID+1, preq->rq_ind.rq_inter_connect.rq_jid);
+	if (rc) return rc;
+
+	preq->rq_ind.rq_inter_connect.rq_host = disrst(sock, &rc);
+	if (rc) return rc;
+
+	preq->rq_ind.rq_inter_connect.rq_portstr = disrst(sock, &rc);
+	if (rc) return rc;
+
+	return rc;
+}
+
+
+int
+decode_DIS_InterDisconnectJob(int sock, struct batch_request *preq)
+{
+	int rc;
+
+	rc = disrfst(sock, PBS_MAXSVRJOBID+1, preq->rq_ind.rq_inter_connect.rq_jid);
+	if (rc) return rc;
+
+	return rc;
+}
+
+

@@ -299,3 +299,105 @@ char *extend;
 
 	return rc;
 }
+
+
+int
+pbs_inter_connect_job(c, jobid, host, portstr, extend)
+int c;
+char *jobid;
+char *host;
+char *portstr;
+char *extend;
+{
+	struct batch_reply *reply;
+	int	rc;
+
+	if ((jobid == NULL) || (*jobid == '\0') || (host == NULL) ||
+					(portstr == NULL))
+		return (pbs_errno = PBSE_IVALREQ);
+
+	/* initialize the thread context data, if not already initialized */
+	if (pbs_client_thread_init_thread_context() != 0)
+		return pbs_errno;
+
+	/* lock pthread mutex here for this connection */
+	/* blocking call, waits for mutex release */
+	if (pbs_client_thread_lock_connection(c) != 0)
+		return pbs_errno;
+
+	/* setup DIS support routines for following DIS calls */
+
+	DIS_tcp_funcs();
+
+	if ((rc = PBSD_inter_connect_put(c, jobid, host, portstr, extend, 0, NULL)) != 0) {
+		if (set_conn_errtxt(c, dis_emsg[rc]) != 0) {
+			pbs_errno = PBSE_SYSTEM;
+		} else {
+			pbs_errno = PBSE_PROTOCOL;
+		}
+		(void)pbs_client_thread_unlock_connection(c);
+		return pbs_errno;
+	}
+
+	/* read reply */
+
+	reply = PBSD_rdrpy(c);
+	rc = get_conn_errno(c);
+
+	PBSD_FreeReply(reply);
+
+	/* unlock the thread lock and update the thread context data */
+	if (pbs_client_thread_unlock_connection(c) != 0)
+		return pbs_errno;
+
+	return rc;
+}
+
+int
+pbs_inter_disconnect_job(c, jobid, extend)
+int c;
+char *jobid;
+char *extend;
+{
+	struct batch_reply *reply;
+	int	rc;
+
+	if ((jobid == NULL) || (*jobid == '\0'))
+		return (pbs_errno = PBSE_IVALREQ);
+
+	/* initialize the thread context data, if not already initialized */
+	if (pbs_client_thread_init_thread_context() != 0)
+		return pbs_errno;
+
+	/* lock pthread mutex here for this connection */
+	/* blocking call, waits for mutex release */
+	if (pbs_client_thread_lock_connection(c) != 0)
+		return pbs_errno;
+
+	/* setup DIS support routines for following DIS calls */
+
+	DIS_tcp_funcs();
+
+	if ((rc = PBSD_inter_disconnect_put(c, jobid, extend, 0, NULL)) != 0) {
+		if (set_conn_errtxt(c, dis_emsg[rc]) != 0) {
+			pbs_errno = PBSE_SYSTEM;
+		} else {
+			pbs_errno = PBSE_PROTOCOL;
+		}
+		(void)pbs_client_thread_unlock_connection(c);
+		return pbs_errno;
+	}
+
+	/* read reply */
+
+	reply = PBSD_rdrpy(c);
+	rc = get_conn_errno(c);
+
+	PBSD_FreeReply(reply);
+
+	/* unlock the thread lock and update the thread context data */
+	if (pbs_client_thread_unlock_connection(c) != 0)
+		return pbs_errno;
+
+	return rc;
+}

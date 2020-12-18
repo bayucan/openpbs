@@ -915,6 +915,14 @@ dispatch_request(int sfds, struct batch_request *request)
 			req_messagejob(request);
 			break;
 
+		case PBS_BATCH_InterConnectJob:
+			req_inter_connect_job(request);
+			break;
+
+		case PBS_BATCH_InterDisconnectJob:
+			req_inter_disconnect_job(request);
+			break;
+
 		case PBS_BATCH_PySpawn:
 			if (sfds != PBS_LOCAL_CONNECTION && prot == PROT_TCP)
 				conn->cn_authen |= PBS_NET_CONN_NOTIMEOUT;
@@ -1621,6 +1629,12 @@ free_br(struct batch_request *preq)
 		case PBS_BATCH_RelnodesJob:
 			if (preq->rq_ind.rq_relnodes.rq_node_list)
 				(void)free(preq->rq_ind.rq_relnodes.rq_node_list);
+			break;
+		case PBS_BATCH_InterConnectJob:
+			if (preq->rq_ind.rq_inter_connect.rq_host)
+				(void)free(preq->rq_ind.rq_inter_connect.rq_host);
+			if (preq->rq_ind.rq_inter_connect.rq_portstr)
+				(void)free(preq->rq_ind.rq_inter_connect.rq_portstr);
 			break;
 		case PBS_BATCH_PySpawn:
 			arrayfree(preq->rq_ind.rq_py_spawn.rq_argv);
